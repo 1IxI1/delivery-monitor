@@ -1,0 +1,6 @@
+my-config.json
+log
+wallets.py
+.venv
+env
+__pycache__
