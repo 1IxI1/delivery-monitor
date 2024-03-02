@@ -31,7 +31,7 @@ This will send 1000 messages in total to your wallets. Not 1000 to each, but 100
 
 ## What are log-wallets
 
-Log-wallets are the same as for v3r2 wallets, but with
+Log-wallets are the same as v3r2 wallets, but with
 - no message sending ability
 - no check for `subwallet_id`
 
