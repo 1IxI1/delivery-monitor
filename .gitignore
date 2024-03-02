@@ -4,3 +4,5 @@ wallets.py
 .venv
 env
 __pycache__
+.env
+.blockstore/

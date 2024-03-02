@@ -1,26 +1,20 @@
 import asyncio
 import os
+import sys
 import time
 
+from dotenv import load_dotenv
 from pytonapi import AsyncTonapi
 from pytonapi.async_tonapi.client import json
 from pytoniq import LiteClient
-from pytoniq.contract.wallets import Wallet, WalletV3R2, WalletV4R2
-from pytoniq_core import Address, BlockIdExt, InternalMsgInfo, MessageAny, WalletMessage
-from pytoniq_core.boc import Cell
-from pytoniq_core.boc.cell import Boc
-from pytoniq_core.boc.deserialize import base64
+from pytoniq.contract.wallets import Wallet, WalletV3R2
+from pytoniq_core import Builder
+from pytoniq_core.boc import Address, Cell
 from pytoniq_core.crypto import keys
+from tonsdk.utils import sign_message
 
+from client import TonCenterClient
 from wallets import wallets
-
-out_sent = "log/sent.txt"
-out_found = "log/found.txt"
-os.makedirs("log", exist_ok=True)
-
-wallet_code = Cell.from_boc(
-    "b5ee9c72410108010076000114ff00f4a413f4bcf2c80b01020120020302014804050076f28308d71820d31f31d31fd31f3001f823bbf263ed44d0d31fd31fd3ffd15132baf2a103f901541042f910f2a3f80002a4c8cb1fcb1fcbffc9ed540004d03002014806070017bb39ced44d0d33f31d70bff80011b8c97ed44d0d70b1f8e62bd459"
-)[0]
 
 config = json.loads(open("testnet.json").read())
 client = LiteClient.from_config(config, timeout=10)
@@ -29,55 +23,99 @@ sent_tx_ids = set([])
 found_tx_ids = set([])
 
 
+def add_found_tx_id(tx_id: str):
+    if tx_id in sent_tx_ids and tx_id not in found_tx_ids:
+        found_tx_ids.add(tx_id)
+        print(f"Found tx: {tx_id}")
+        with open(out_found, "a") as f:
+            f.write(tx_id + "\n")
+
+
 async def watch_transactions():
     """Watches for sent tx to be shown up on wallets
     and adds them to found_tx_ids."""
     while True:
         for wdata in wallets:
-            wallet = wdata["wallet"]
-            txs = await client.get_transactions(wallet.address, 3, from_lt=0)
-            for i in txs:
-                if i.in_msg is not None:
-                    if i.in_msg.is_external:
-                        msg_slice = i.in_msg.body.begin_parse()
-                        msg_slice.skip_bits(512)
-                        tx_id = msg_slice.load_uint(32)
-                        tx_id = f"{tx_id}:{wallet.address.to_str()}"
-                        if tx_id in sent_tx_ids and tx_id not in found_tx_ids:
-                            found_tx_ids.add(tx_id)
-                            print(f"Found tx: {tx_id}")
-                            with open(out_found, "a") as f:
-                                f.write(tx_id + "\n")
+            if isinstance(client, LiteClient):
+                txs = await client.get_transactions(wdata["addr"], 3, from_lt=0)
+                for i in txs:
+                    if i.in_msg is not None:
+                        if i.in_msg.is_external:
+                            msg_slice = i.in_msg.body.begin_parse()
+                            msg_slice.skip_bits(512)
+                            tx_id = msg_slice.load_uint(32)
+                            tx_id = f"{tx_id}:{wdata['addr']}"
+                            add_found_tx_id(tx_id)
+
+            elif isinstance(client, TonCenterClient):
+                txs = await client.get_transactions(wdata["addr"], 3, from_lt=0)
+                for i in txs:
+                    if "in_msg" in i and i["in_msg"]:
+                        if i["in_msg"]["source"] == "":  # from nowhere
+                            body_b64 = i["in_msg"]["msg_data"]["body"]
+                            msg_slice = Cell.from_boc(body_b64)[0].begin_parse()
+                            msg_slice.skip_bits(512)
+                            tx_id = msg_slice.load_uint(32)
+                            tx_id = f"{tx_id}:{wdata['addr']}"
+                            # print(tx_id)
+                            add_found_tx_id(tx_id)
+            else:
+                raise NotImplementedError("Tonapi or smth")
         await asyncio.sleep(15)
 
 
-async def send_tx_with_id(tx_id: int, wallet: WalletV3R2, private_key: bytes):
-    seqno = await wallet.get_seqno()
-    msgs = [
-        Wallet.create_wallet_internal_message(
-            destination=wallet.address,
-            send_mode=1,
-            value=0,
-        )
-    ]
+async def init_client():
+    if isinstance(client, LiteClient):
+        await client.connect()
+    elif isinstance(client, TonCenterClient):
+        pass
+    else:
+        raise NotImplementedError("Tonapi or smth")
 
-    body = wallet.raw_create_transfer_msg(
-        private_key=private_key,
-        wallet_id=tx_id,
-        valid_until=int(time.time()) + 60,
-        seqno=seqno,
-        messages=msgs,
-    )
 
-    message = wallet.create_external_msg(
-        dest=wallet.address,
-        body=body,
+async def get_seqno(address: str) -> int:
+    if isinstance(client, TonCenterClient):
+        return await client.seqno(address)
+    elif isinstance(client, LiteClient):
+        return (await client.run_get_method(address, "seqno", []))[0]
+    else:
+        raise NotImplementedError("Tonapi or smth")
+
+
+async def sendboc(boc: bytes):
+    if isinstance(client, LiteClient):
+        await client.raw_send_message(boc)
+    elif isinstance(client, TonCenterClient):
+        await client.send(boc)
+    else:
+        raise NotImplementedError("Tonapi or smth")
+
+
+async def send_tx_with_id(tx_id: int, wallet_address: str, private_key: bytes):
+    seqno = await get_seqno(wallet_address)
+
+    # ext_msg_body#_ signature:bits512 some_value:uint32
+    #                valid_until:uint32 msg_seqno:uint32
+    #                = ExtMsgBody;
+    body = Builder()
+    body.store_uint(tx_id, 32)
+    body.store_uint(int(time.time()) + 60, 32)
+    body.store_uint(seqno, 32)
+    body = body.end_cell()
+
+    signature = sign_message(body.hash, private_key).signature
+    signed_body = Builder().store_bytes(signature).store_cell(body).end_cell()
+
+    addr = Address(wallet_address)
+    message = Wallet.create_external_msg(
+        dest=addr,
+        body=signed_body,
     )
 
     boc = message.serialize().to_boc()
-    await client.raw_send_message(boc)
+    await sendboc(boc)
 
-    tx_full_id = f"{tx_id}:{wallet.address.to_str()}"
+    tx_full_id = f"{tx_id}:{wallet_address}"
     sent_tx_ids.add(tx_full_id)
     print(f"Sent tx {tx_full_id}")
     with open(out_sent, "a") as f:
@@ -85,12 +123,13 @@ async def send_tx_with_id(tx_id: int, wallet: WalletV3R2, private_key: bytes):
 
 
 async def start_sending():
-    while True:
+    while len(sent_tx_ids) < sends_count:
         tx_id = int(time.time())
         for wdata in wallets:
             try:
-                await send_tx_with_id(tx_id, wdata["wallet"], wdata["sk"])
+                await send_tx_with_id(tx_id, wdata["addr"], wdata["sk"])
             except Exception as e:
+                raise e
                 print(
                     "Failed to send tx with id",
                     tx_id,
@@ -99,31 +138,18 @@ async def start_sending():
                     "error:",
                     str(e),
                 )
-        await asyncio.sleep(30)
+        await asyncio.sleep(60)
 
 
-async def main():
-    await client.connect()
-
+async def read_wallets():
     for k, wdata in enumerate(wallets):
         seed = int(wdata["seed"], 16)
         seed_bytes = seed.to_bytes(32, "big")
         public_key, private_key = keys.crypto_sign_seed_keypair(seed_bytes)
-        wallet = await WalletV3R2.from_code_and_data(
-            client,
-            public_key=public_key,
-            private_key=private_key,
-            code=wallet_code,
-            wallet_id=0,
-        )
-        if wdata["addr"] != wallet.address.to_str():
-            raise ValueError("Invalid seed for wallet " + wdata["addr"])
-        wallets[k]["wallet"] = wallet
         wallets[k]["sk"] = private_key
 
-    asyncio.create_task(watch_transactions())
-    asyncio.create_task(start_sending())
 
+async def printer():
     while True:
         missing = []
         for i in sent_tx_ids:
@@ -133,9 +159,47 @@ async def main():
         print("Missing txs:", missing)
         print(f"Found/sent: {len(found_tx_ids)}/{len(sent_tx_ids)}")
         print("Success rate:", 1 - len(missing) / (len(sent_tx_ids) or 1))
-
         await asyncio.sleep(5)
 
 
+async def worker():
+    await init_client()
+    await read_wallets()
+    asyncio.create_task(watch_transactions())
+    asyncio.create_task(printer())
+    await start_sending()
+    print(f"\nDone sending {len(sent_tx_ids)} txs")
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    sends_count = 100
+    if len(sys.argv) > 1:
+        sends_count = int(sys.argv[1])
+
+    load_dotenv()
+
+    logs_path = os.getenv("LOGDIR") or "log"
+    os.makedirs(logs_path, exist_ok=True)
+    out_sent = logs_path + "/sent.txt"
+    out_found = logs_path + "/found.txt"
+
+    provider = os.getenv("PROVIDER")
+    if not provider or provider not in ["toncenter", "liteserver", "tonapi"]:
+        raise ValueError("Invalid PROVIDER env variable")
+
+    if provider == "tonapi":
+        raise NotImplementedError("TON API provider is not implemented yet")
+    elif provider == "liteserver":
+        config_path = os.getenv("CONFIG")
+        if not config_path:
+            raise ValueError("No CONFIG env variable")
+        config = json.loads(open(config_path).read())
+        client = LiteClient.from_config(config, timeout=10)
+    elif provider == "toncenter":
+        api_url = os.getenv("TONCENTER_API_URL")
+        api_key = os.getenv("TONCENTER_API_KEY")
+        if not api_url or not api_key:
+            raise ValueError("No API_URL or API_KEY env variable")
+        client = TonCenterClient(api_url, api_key)
+
+    asyncio.run(worker())
