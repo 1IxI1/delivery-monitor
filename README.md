@@ -35,7 +35,7 @@ Log-wallets are the same as v3r2 wallets, but with
 - no message sending ability
 - no check for `subwallet_id`
 
-And thus, you can provide any variable `subwallet_id` in the message and it **won't make any action**, except increasing seqno.
+And thus, you can provide any variable `subwallet_id` in the message and contract **won't make any action**, except increasing seqno.
 
 In the script, this variable is occupied by the timestamp of sending, making **every message unique**.
 

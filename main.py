@@ -4,10 +4,11 @@ import sys
 import time
 
 from dotenv import load_dotenv
-from pytonapi import AsyncTonapi
+
+# from pytonapi import AsyncTonapi
 from pytonapi.async_tonapi.client import json
 from pytoniq import LiteClient
-from pytoniq.contract.wallets import Wallet, WalletV3R2
+from pytoniq.contract.wallets import Wallet
 from pytoniq_core import Builder
 from pytoniq_core.boc import Address, Cell
 from pytoniq_core.crypto import keys
@@ -23,7 +24,11 @@ sent_tx_ids = set([])
 found_tx_ids = set([])
 
 
-def add_found_tx_id(tx_id: str):
+def parse_and_add_msg(msg: Cell, addr: str):
+    msg_slice = msg.begin_parse()
+    msg_slice.skip_bits(512)
+    tx_id = msg_slice.load_uint(32)
+    tx_id = f"{tx_id}:{addr}"
     if tx_id in sent_tx_ids and tx_id not in found_tx_ids:
         found_tx_ids.add(tx_id)
         print(f"Found tx: {tx_id}")
@@ -38,27 +43,22 @@ async def watch_transactions():
         for wdata in wallets:
             if isinstance(client, LiteClient):
                 txs = await client.get_transactions(wdata["addr"], 3, from_lt=0)
-                for i in txs:
-                    if i.in_msg is not None:
-                        if i.in_msg.is_external:
-                            msg_slice = i.in_msg.body.begin_parse()
-                            msg_slice.skip_bits(512)
-                            tx_id = msg_slice.load_uint(32)
-                            tx_id = f"{tx_id}:{wdata['addr']}"
-                            add_found_tx_id(tx_id)
+                for tx in txs:
+                    if tx.in_msg is not None and tx.in_msg.is_external:
+                        parse_and_add_msg(tx.in_msg.body, wdata["addr"])
 
             elif isinstance(client, TonCenterClient):
                 txs = await client.get_transactions(wdata["addr"], 3, from_lt=0)
-                for i in txs:
-                    if "in_msg" in i and i["in_msg"]:
-                        if i["in_msg"]["source"] == "":  # from nowhere
-                            body_b64 = i["in_msg"]["msg_data"]["body"]
-                            msg_slice = Cell.from_boc(body_b64)[0].begin_parse()
-                            msg_slice.skip_bits(512)
-                            tx_id = msg_slice.load_uint(32)
-                            tx_id = f"{tx_id}:{wdata['addr']}"
-                            # print(tx_id)
-                            add_found_tx_id(tx_id)
+                for tx in txs:
+                    if (
+                        "in_msg" in tx
+                        and tx["in_msg"]
+                        # from nowhere:
+                        and tx["in_msg"]["source"] == ""
+                    ):
+                        body_b64 = tx["in_msg"]["msg_data"]["body"]
+                        body = Cell.from_boc(body_b64)[0]
+                        parse_and_add_msg(body, wdata["addr"])
             else:
                 raise NotImplementedError("Tonapi or smth")
         await asyncio.sleep(15)
