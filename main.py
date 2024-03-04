@@ -24,16 +24,21 @@ sent_tx_ids = set([])
 found_tx_ids = set([])
 
 
-def parse_and_add_msg(msg: Cell, addr: str):
+def parse_and_add_msg(msg: Cell, blockutime: int, addr: str) -> bool:
     msg_slice = msg.begin_parse()
     msg_slice.skip_bits(512)
     tx_id = msg_slice.load_uint(32)
-    tx_id = f"{tx_id}:{addr}"
-    if tx_id in sent_tx_ids and tx_id not in found_tx_ids:
-        found_tx_ids.add(tx_id)
-        print(f"Found tx: {tx_id}")
+    tx_full_id = f"{tx_id}:{addr}"
+    if tx_full_id in sent_tx_ids and tx_full_id not in found_tx_ids:
+        found_tx_ids.add(tx_full_id)
+        current = int(time.time())
+        print(
+            f"Found tx: {tx_full_id} at {current}. Executed in {blockutime - tx_id} sec. Found in {current - tx_id} sec."
+        )
         with open(out_found, "a") as f:
-            f.write(tx_id + "\n")
+            f.write(f"{tx_full_id}, {blockutime - tx_id}, {current - tx_id}\n")
+            return True
+    return False
 
 
 async def watch_transactions():
@@ -45,7 +50,7 @@ async def watch_transactions():
                 txs = await client.get_transactions(wdata["addr"], 3, from_lt=0)
                 for tx in txs:
                     if tx.in_msg is not None and tx.in_msg.is_external:
-                        parse_and_add_msg(tx.in_msg.body, wdata["addr"])
+                        parse_and_add_msg(tx.in_msg.body, tx.now, wdata["addr"])
 
             elif isinstance(client, TonCenterClient):
                 txs = await client.get_transactions(wdata["addr"], 3, from_lt=0)
@@ -58,10 +63,10 @@ async def watch_transactions():
                     ):
                         body_b64 = tx["in_msg"]["msg_data"]["body"]
                         body = Cell.from_boc(body_b64)[0]
-                        parse_and_add_msg(body, wdata["addr"])
+                        r = parse_and_add_msg(body, tx["utime"], wdata["addr"])
             else:
                 raise NotImplementedError("Tonapi or smth")
-        await asyncio.sleep(15)
+        await asyncio.sleep(4)
 
 
 async def init_client():
@@ -124,8 +129,8 @@ async def send_tx_with_id(tx_id: int, wallet_address: str, private_key: bytes):
 
 async def start_sending():
     while len(sent_tx_ids) < sends_count:
-        tx_id = int(time.time())
         for wdata in wallets:
+            tx_id = int(time.time())
             try:
                 await send_tx_with_id(tx_id, wdata["addr"], wdata["sk"])
             except Exception as e:
