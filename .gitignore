@@ -6,3 +6,4 @@ env
 __pycache__
 .env
 .blockstore/
+Session.vim

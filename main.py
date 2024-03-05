@@ -1,11 +1,11 @@
 import asyncio
+import base64
 import os
 import sys
 import time
 
 from dotenv import load_dotenv
-
-# from pytonapi import AsyncTonapi
+from pytonapi import AsyncTonapi
 from pytonapi.async_tonapi.client import json
 from pytoniq import LiteClient
 from pytoniq.contract.wallets import Wallet
@@ -20,8 +20,8 @@ from wallets import wallets
 config = json.loads(open("testnet.json").read())
 client = LiteClient.from_config(config, timeout=10)
 
-sent_tx_ids = set([])
-found_tx_ids = set([])
+missing_txs = set([])
+sent_count = 0
 
 
 def parse_and_add_msg(msg: Cell, blockutime: int, addr: str) -> bool:
@@ -29,8 +29,8 @@ def parse_and_add_msg(msg: Cell, blockutime: int, addr: str) -> bool:
     msg_slice.skip_bits(512)
     tx_id = msg_slice.load_uint(32)
     tx_full_id = f"{tx_id}:{addr}"
-    if tx_full_id in sent_tx_ids and tx_full_id not in found_tx_ids:
-        found_tx_ids.add(tx_full_id)
+    if tx_full_id in missing_txs:
+        missing_txs.remove(tx_full_id)
         current = int(time.time())
         print(
             f"Found tx: {tx_full_id} at {current}. Executed in {blockutime - tx_id} sec. Found in {current - tx_id} sec."
@@ -45,15 +45,16 @@ async def watch_transactions():
     """Watches for sent tx to be shown up on wallets
     and adds them to found_tx_ids."""
     while True:
-        for wdata in wallets:
+        for tx_id in missing_txs.copy():
+            addr = tx_id.split(":")[1]
             if isinstance(client, LiteClient):
-                txs = await client.get_transactions(wdata["addr"], 3, from_lt=0)
+                txs = await client.get_transactions(addr, 3, from_lt=0)
                 for tx in txs:
                     if tx.in_msg is not None and tx.in_msg.is_external:
-                        parse_and_add_msg(tx.in_msg.body, tx.now, wdata["addr"])
+                        parse_and_add_msg(tx.in_msg.body, tx.now, addr)
 
             elif isinstance(client, TonCenterClient):
-                txs = await client.get_transactions(wdata["addr"], 3, from_lt=0)
+                txs = await client.get_transactions(addr, 3, from_lt=0)
                 for tx in txs:
                     if (
                         "in_msg" in tx
@@ -63,9 +64,18 @@ async def watch_transactions():
                     ):
                         body_b64 = tx["in_msg"]["msg_data"]["body"]
                         body = Cell.from_boc(body_b64)[0]
-                        r = parse_and_add_msg(body, tx["utime"], wdata["addr"])
+                        r = parse_and_add_msg(body, tx["utime"], addr)
             else:
-                raise NotImplementedError("Tonapi or smth")
+                txs = await client.blockchain.get_account_transactions(addr, limit=3)
+                for tx in txs.transactions:
+                    if tx.in_msg is not None and tx.in_msg.source is None:
+                        body = tx.in_msg.raw_body
+                        if isinstance(body, str):
+                            body = Cell.from_boc(body)[0]
+                            parse_and_add_msg(body, tx.utime, addr)
+                # from pprint import pprint
+                # pprint(txs)
+                await asyncio.sleep(2)
         await asyncio.sleep(4)
 
 
@@ -75,7 +85,7 @@ async def init_client():
     elif isinstance(client, TonCenterClient):
         pass
     else:
-        raise NotImplementedError("Tonapi or smth")
+        pass
 
 
 async def get_seqno(address: str) -> int:
@@ -84,7 +94,7 @@ async def get_seqno(address: str) -> int:
     elif isinstance(client, LiteClient):
         return (await client.run_get_method(address, "seqno", []))[0]
     else:
-        raise NotImplementedError("Tonapi or smth")
+        return (await client.wallet.get_account_seqno(address)) or 0
 
 
 async def sendboc(boc: bytes):
@@ -93,10 +103,14 @@ async def sendboc(boc: bytes):
     elif isinstance(client, TonCenterClient):
         await client.send(boc)
     else:
-        raise NotImplementedError("Tonapi or smth")
+        # raise NotImplementedError("Tonapi or smth")
+        api_body = {"boc": base64.b64encode(boc).decode()}
+        await client.blockchain.send_message(body=api_body)
+        await asyncio.sleep(2)
 
 
 async def send_tx_with_id(tx_id: int, wallet_address: str, private_key: bytes):
+    global sent_count
     seqno = await get_seqno(wallet_address)
 
     # ext_msg_body#_ signature:bits512 some_value:uint32
@@ -121,14 +135,15 @@ async def send_tx_with_id(tx_id: int, wallet_address: str, private_key: bytes):
     await sendboc(boc)
 
     tx_full_id = f"{tx_id}:{wallet_address}"
-    sent_tx_ids.add(tx_full_id)
+    missing_txs.add(tx_full_id)
+    sent_count += 1
     print(f"Sent tx {tx_full_id}")
     with open(out_sent, "a") as f:
         f.write(tx_full_id + "\n")
 
 
 async def start_sending():
-    while len(sent_tx_ids) < sends_count:
+    while sent_count < sends_count:
         for wdata in wallets:
             tx_id = int(time.time())
             try:
@@ -156,14 +171,10 @@ async def read_wallets():
 
 async def printer():
     while True:
-        missing = []
-        for i in sent_tx_ids:
-            if i not in found_tx_ids:
-                missing.append(i)
         print("--------------")
-        print("Missing txs:", missing)
-        print(f"Found/sent: {len(found_tx_ids)}/{len(sent_tx_ids)}")
-        print("Success rate:", 1 - len(missing) / (len(sent_tx_ids) or 1))
+        print("Missing txs:", list(missing_txs) or '-')
+        print(f"Found/sent: {sent_count - len(missing_txs)}/{sent_count}")
+        print("Success rate:", 1 - len(missing_txs) / (sent_count or 1))
         await asyncio.sleep(5)
 
 
@@ -173,7 +184,7 @@ async def worker():
     asyncio.create_task(watch_transactions())
     asyncio.create_task(printer())
     await start_sending()
-    print(f"\nDone sending {len(sent_tx_ids)} txs")
+    print(f"\nDone sending {sent_count} txs")
 
 
 if __name__ == "__main__":
@@ -193,13 +204,20 @@ if __name__ == "__main__":
         raise ValueError("Invalid PROVIDER env variable")
 
     if provider == "tonapi":
-        raise NotImplementedError("TON API provider is not implemented yet")
+        # raise NotImplementedError("TON API provider is not implemented yet")
+        api_key = os.getenv("TONAPI_KEY")
+        if not api_key:
+            raise ValueError("No API_KEY env variable")
+        is_testnet = bool(os.getenv("TESTNET"))
+        if is_testnet is None:
+            raise ValueError("No TESTNET env variable")
+        client = AsyncTonapi(api_key, is_testnet=is_testnet, max_retries=10)
     elif provider == "liteserver":
         config_path = os.getenv("CONFIG")
         if not config_path:
             raise ValueError("No CONFIG env variable")
         config = json.loads(open(config_path).read())
-        client = LiteClient.from_config(config, timeout=10)
+        client = LiteClient.from_config(config, timeout=15)
     elif provider == "toncenter":
         api_url = os.getenv("TONCENTER_API_URL")
         api_key = os.getenv("TONCENTER_API_KEY")
