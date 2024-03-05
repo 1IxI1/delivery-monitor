@@ -1,5 +1,5 @@
 my-config.json
-log
+log*
 wallets.py
 .venv
 env
