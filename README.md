@@ -6,20 +6,19 @@ Of course, it can be run with different providers to check for any issues with L
 
 ## How to use
 
-Deploy log-wallets (script is the same as for v3 wallets) and create `wallets.py` file with your new loggers:
+Deploy log-wallets (script is the same as for v3 wallets).
 
-```python
-wallets = [
-    {
-        "addr": "EQAWgUoE0qsUDUJMJXH25H__mATCdGkhVDQtCw06nOqXoDJ9",
-        "seed": "aaaaaaaaaa30d3d04bbf6e1bbbbbbbbbbbbbbbbbbbbbbb12bab1d0ae1deccccc",
-        "wallet": None,
-        "sk": None,
-    },
-]
+Create `wallets.txt` file with your new loggers:
+
 ```
+EQAWgUoE0qsUDUJMJXH25H__mATCdGkhVDQtCw06nOqXoDJ9 0309251779ebe8f2a4ccb10f4edcf2243e78764d63bb11c146fec926eb819512
+EQBPXbJUj91i2jkcyghHLUbF27wxM1oLpLp99yeyAugDAEYv d2c97e8439ba407e448f8864961480483089cb8a83e2a8085d67b4feda6765e2
+```
+The second column here is the wallet's **seed** - 64 hex characters.
 
-Run:
+Add as many wallets as you want.
+
+#### Run:
 
 ```bash
 cp .env.example .env 
@@ -44,6 +43,7 @@ In the script, this variable is occupied by the timestamp of sending, making **e
 You may fill your `.env` in the following ways:
 
 ```bash
+WALLETS="wallets-testnet.txt"
 LOGDIR="log"
 TESNET=true
 PROVIDER="toncenter" # liteserver, tonapi
@@ -52,6 +52,7 @@ TONCENTER_API_KEY="3acfd04736431db1dbbe44a3b9921ee8b8ccb31c8373c947f5066a43afb04
 ```
 
 ```bash
+WALLETS="2-wallets-testnet.txt"
 LOGDIR="log"
 TESNET=true
 PROVIDER="liteserver" # toncenter, tonapi
@@ -59,6 +60,7 @@ CONFIG="testnet-global.config.json"
 ```
 
 ```bash
+WALLETS="wallets.txt"
 LOGDIR="log"
 TESNET=true
 PROVIDER="tonapi" # liteserver, toncenter 

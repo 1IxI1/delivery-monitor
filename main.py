@@ -15,10 +15,13 @@ from pytoniq_core.crypto import keys
 from tonsdk.utils import sign_message
 
 from client import TonCenterClient
-from wallets import wallets
+
+# from wallets import wallets
 
 config = json.loads(open("testnet.json").read())
 client = LiteClient.from_config(config, timeout=10)
+
+wallets = []
 
 missing_txs = set([])
 sent_count = 0
@@ -162,17 +165,25 @@ async def start_sending():
 
 
 async def read_wallets():
-    for k, wdata in enumerate(wallets):
-        seed = int(wdata["seed"], 16)
-        seed_bytes = seed.to_bytes(32, "big")
-        public_key, private_key = keys.crypto_sign_seed_keypair(seed_bytes)
-        wallets[k]["sk"] = private_key
+    global wallets
+    with open(wallets_path, "r") as f:
+        for line in f.readlines():
+            addr, seed = line.split()
+            seed = int(seed, 16)
+            seed_bytes = seed.to_bytes(32, "big")
+            _, private_key = keys.crypto_sign_seed_keypair(seed_bytes)
+            wallets.append(
+                {
+                    "addr": addr,
+                    "sk": private_key,
+                }
+            )
 
 
 async def printer():
     while True:
         print("--------------")
-        print("Missing txs:", list(missing_txs) or '-')
+        print("Missing txs:", list(missing_txs) or "-")
         print(f"Found/sent: {sent_count - len(missing_txs)}/{sent_count}")
         print("Success rate:", 1 - len(missing_txs) / (sent_count or 1))
         await asyncio.sleep(5)
@@ -198,6 +209,8 @@ if __name__ == "__main__":
     os.makedirs(logs_path, exist_ok=True)
     out_sent = logs_path + "/sent.txt"
     out_found = logs_path + "/found.txt"
+
+    wallets_path = os.getenv("WALLETS") or "wallets.txt"
 
     provider = os.getenv("PROVIDER")
     if not provider or provider not in ["toncenter", "liteserver", "tonapi"]:
