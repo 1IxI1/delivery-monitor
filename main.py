@@ -21,6 +21,7 @@ from client import TonCenterClient
 config = json.loads(open("testnet.json").read())
 client = LiteClient.from_config(config, timeout=10)
 
+extended_message = True
 wallets = []
 
 missing_txs = set([])
@@ -123,6 +124,15 @@ async def send_tx_with_id(tx_id: int, wallet_address: str, private_key: bytes):
     body.store_uint(tx_id, 32)
     body.store_uint(int(time.time()) + 60, 32)
     body.store_uint(seqno, 32)
+
+    if extended_message: # making the size of 1MB
+        extension1 = Builder().store_bits("11" * 499).end_cell()
+        extension2 = Builder().store_bits("01" * 499).end_cell()
+        extension3 = Builder().store_bits("10" * 499).end_cell()
+        body.store_ref(Builder().store_bits("11" * 500).store_ref(extension1).end_cell())
+        body.store_ref(Builder().store_bits("01" * 501).store_ref(extension2).end_cell())
+        body.store_ref(Builder().store_bits("10" * 502).store_ref(extension3).end_cell())
+        body.store_ref(Builder().store_bits("00" * 503).end_cell())
     body = body.end_cell()
 
     signature = sign_message(body.hash, private_key).signature
