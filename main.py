@@ -68,7 +68,9 @@ async def watch_transactions():
                             body = Cell.from_boc(body_b64)[0]
                             r = parse_and_add_msg(body, tx["utime"], addr)
                 else:
-                    txs = await client.blockchain.get_account_transactions(addr, limit=3)
+                    txs = await client.blockchain.get_account_transactions(
+                        addr, limit=3
+                    )
                     for tx in txs.transactions:
                         if tx.in_msg is not None and tx.in_msg.source is None:
                             body = tx.in_msg.raw_body
@@ -126,13 +128,19 @@ async def send_tx_with_id(tx_id: int, wallet_address: str, private_key: bytes):
     body.store_uint(int(time.time()) + 9000, 32)
     body.store_uint(seqno, 32)
 
-    if extended_message: # making the size of 1MB
+    if extended_message:  # making the size of 1MB
         extension1 = Builder().store_bits("11" * 499).end_cell()
         extension2 = Builder().store_bits("01" * 499).end_cell()
         extension3 = Builder().store_bits("10" * 499).end_cell()
-        body.store_ref(Builder().store_bits("11" * 500).store_ref(extension1).end_cell())
-        body.store_ref(Builder().store_bits("01" * 501).store_ref(extension2).end_cell())
-        body.store_ref(Builder().store_bits("10" * 502).store_ref(extension3).end_cell())
+        body.store_ref(
+            Builder().store_bits("11" * 500).store_ref(extension1).end_cell()
+        )
+        body.store_ref(
+            Builder().store_bits("01" * 501).store_ref(extension2).end_cell()
+        )
+        body.store_ref(
+            Builder().store_bits("10" * 502).store_ref(extension3).end_cell()
+        )
         body.store_ref(Builder().store_bits("00" * 503).end_cell())
     body = body.end_cell()
 
@@ -233,16 +241,17 @@ if __name__ == "__main__":
         api_key = os.getenv("TONAPI_KEY")
         if not api_key:
             raise ValueError("No API_KEY env variable")
-        is_testnet = bool(os.getenv("TESTNET"))
-        if is_testnet is None:
-            raise ValueError("No TESTNET env variable")
-        client = AsyncTonapi(api_key, is_testnet=False, max_retries=10)
+
+        is_testnet = os.getenv("TESTNET", "False").lower() in ("true", "1", "t")
+        client = AsyncTonapi(api_key, is_testnet=is_testnet, max_retries=10)
+
     elif provider == "liteserver":
         config_path = os.getenv("CONFIG")
         if not config_path:
             raise ValueError("No CONFIG env variable")
         config = json.loads(open(config_path).read())
         client = LiteClient.from_config(config, timeout=15)
+
     elif provider == "toncenter":
         api_url = os.getenv("TONCENTER_API_URL")
         api_key = os.getenv("TONCENTER_API_KEY")
