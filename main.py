@@ -18,10 +18,7 @@ from client import TonCenterClient
 
 # from wallets import wallets
 
-config = json.loads(open("testnet.json").read())
-client = LiteClient.from_config(config, timeout=10)
-
-extended_message = True
+extended_message = False
 wallets = []
 
 missing_txs = set([])
@@ -49,37 +46,40 @@ async def watch_transactions():
     """Watches for sent tx to be shown up on wallets
     and adds them to found_tx_ids."""
     while True:
-        for tx_id in missing_txs.copy():
-            addr = tx_id.split(":")[1]
-            if isinstance(client, LiteClient):
-                txs = await client.get_transactions(addr, 3, from_lt=0)
-                for tx in txs:
-                    if tx.in_msg is not None and tx.in_msg.is_external:
-                        parse_and_add_msg(tx.in_msg.body, tx.now, addr)
+        try:
+            for tx_id in missing_txs.copy():
+                addr = tx_id.split(":")[1]
+                if isinstance(client, LiteClient):
+                    txs = await client.get_transactions(addr, 3, from_lt=0)
+                    for tx in txs:
+                        if tx.in_msg is not None and tx.in_msg.is_external:
+                            parse_and_add_msg(tx.in_msg.body, tx.now, addr)
 
-            elif isinstance(client, TonCenterClient):
-                txs = await client.get_transactions(addr, 3, from_lt=0)
-                for tx in txs:
-                    if (
-                        "in_msg" in tx
-                        and tx["in_msg"]
-                        # from nowhere:
-                        and tx["in_msg"]["source"] == ""
-                    ):
-                        body_b64 = tx["in_msg"]["msg_data"]["body"]
-                        body = Cell.from_boc(body_b64)[0]
-                        r = parse_and_add_msg(body, tx["utime"], addr)
-            else:
-                txs = await client.blockchain.get_account_transactions(addr, limit=3)
-                for tx in txs.transactions:
-                    if tx.in_msg is not None and tx.in_msg.source is None:
-                        body = tx.in_msg.raw_body
-                        if isinstance(body, str):
-                            body = Cell.from_boc(body)[0]
-                            parse_and_add_msg(body, tx.utime, addr)
-                # from pprint import pprint
-                # pprint(txs)
-                await asyncio.sleep(2)
+                elif isinstance(client, TonCenterClient):
+                    txs = await client.get_transactions(addr, 3, from_lt=0)
+                    for tx in txs:
+                        if (
+                            "in_msg" in tx
+                            and tx["in_msg"]
+                            # from nowhere:
+                            and tx["in_msg"]["source"] == ""
+                        ):
+                            body_b64 = tx["in_msg"]["msg_data"]["body"]
+                            body = Cell.from_boc(body_b64)[0]
+                            r = parse_and_add_msg(body, tx["utime"], addr)
+                else:
+                    txs = await client.blockchain.get_account_transactions(addr, limit=3)
+                    for tx in txs.transactions:
+                        if tx.in_msg is not None and tx.in_msg.source is None:
+                            body = tx.in_msg.raw_body
+                            if isinstance(body, str):
+                                body = Cell.from_boc(body)[0]
+                                parse_and_add_msg(body, tx.utime, addr)
+                    # from pprint import pprint
+                    # pprint(txs)
+                    await asyncio.sleep(2)
+        except Exception as e:
+            print("watch_transactions failed, retrying:", e)
         await asyncio.sleep(4)
 
 
@@ -105,7 +105,8 @@ async def sendboc(boc: bytes):
     if isinstance(client, LiteClient):
         await client.raw_send_message(boc)
     elif isinstance(client, TonCenterClient):
-        await client.send(boc)
+        print(base64.b64encode(boc))
+        print(await client.send(boc))
     else:
         # raise NotImplementedError("Tonapi or smth")
         api_body = {"boc": base64.b64encode(boc).decode()}
@@ -122,7 +123,7 @@ async def send_tx_with_id(tx_id: int, wallet_address: str, private_key: bytes):
     #                = ExtMsgBody;
     body = Builder()
     body.store_uint(tx_id, 32)
-    body.store_uint(int(time.time()) + 60, 32)
+    body.store_uint(int(time.time()) + 9000, 32)
     body.store_uint(seqno, 32)
 
     if extended_message: # making the size of 1MB
@@ -162,7 +163,7 @@ async def start_sending():
             try:
                 await send_tx_with_id(tx_id, wdata["addr"], wdata["sk"])
             except Exception as e:
-                raise e
+                # raise e
                 print(
                     "Failed to send tx with id",
                     tx_id,
@@ -224,6 +225,7 @@ if __name__ == "__main__":
 
     provider = os.getenv("PROVIDER")
     if not provider or provider not in ["toncenter", "liteserver", "tonapi"]:
+        print(provider)
         raise ValueError("Invalid PROVIDER env variable")
 
     if provider == "tonapi":
@@ -234,7 +236,7 @@ if __name__ == "__main__":
         is_testnet = bool(os.getenv("TESTNET"))
         if is_testnet is None:
             raise ValueError("No TESTNET env variable")
-        client = AsyncTonapi(api_key, is_testnet=is_testnet, max_retries=10)
+        client = AsyncTonapi(api_key, is_testnet=False, max_retries=10)
     elif provider == "liteserver":
         config_path = os.getenv("CONFIG")
         if not config_path:
@@ -244,6 +246,7 @@ if __name__ == "__main__":
     elif provider == "toncenter":
         api_url = os.getenv("TONCENTER_API_URL")
         api_key = os.getenv("TONCENTER_API_KEY")
+        print(api_key)
         if not api_url or not api_key:
             raise ValueError("No API_URL or API_KEY env variable")
         client = TonCenterClient(api_url, api_key)
