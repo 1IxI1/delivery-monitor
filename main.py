@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import os
+import sqlite3
 import sys
 import time
 
@@ -21,8 +22,31 @@ from client import TonCenterClient
 extended_message = False
 wallets = []
 
-missing_txs = set([])
 sent_count = 0
+
+def add_new_tx(tx_id: int, addr: str):
+    cursor.execute(
+        "INSERT INTO txs (addr, utime, is_found) VALUES (?, ?, 0)",
+        (addr, tx_id),
+    )
+    connection.commit()
+
+def get_missing_ids():
+    cursor.execute("SELECT addr, utime FROM txs WHERE is_found = 0")
+    result = cursor.fetchall()
+    missing_ids = []
+    for addr, utime in result:
+        missing_ids.append(f"{utime}:{addr}")
+    return missing_ids
+
+
+def make_found(tx_full_id: str, executed_in: int, found_in: int):
+    utime, addr = tx_full_id.split(":")
+    cursor.execute(
+        "UPDATE txs SET is_found = 1, executed_in = ?, found_in = ? WHERE addr = ? AND utime = ?",
+        (executed_in, found_in, addr, utime),
+    )
+    connection.commit()
 
 
 def parse_and_add_msg(msg: Cell, blockutime: int, addr: str) -> bool:
@@ -30,16 +54,18 @@ def parse_and_add_msg(msg: Cell, blockutime: int, addr: str) -> bool:
     msg_slice.skip_bits(512)
     tx_id = msg_slice.load_uint(32)
     tx_full_id = f"{tx_id}:{addr}"
-    if tx_full_id in missing_txs:
-        missing_txs.remove(tx_full_id)
+    if tx_full_id in get_missing_ids():
+        # missing_txs.remove(tx_full_id)
         current = int(time.time())
         print(
             f"Found tx: {tx_full_id} at {current}. Executed in {blockutime - tx_id} sec. Found in {current - tx_id} sec."
         )
-        with open(out_found, "a") as f:
-            f.write(f"{tx_full_id}, {blockutime - tx_id}, {current - tx_id}\n")
-            return True
-    return False
+        executed_in = blockutime - tx_id
+        found_in = current - tx_id
+        make_found(tx_full_id, executed_in, found_in)
+        return True
+    else:
+        return False
 
 
 async def watch_transactions():
@@ -47,7 +73,7 @@ async def watch_transactions():
     and adds them to found_tx_ids."""
     while True:
         try:
-            for tx_id in missing_txs.copy():
+            for tx_id in get_missing_ids():
                 addr = tx_id.split(":")[1]
                 if isinstance(client, LiteClient):
                     txs = await client.get_transactions(addr, 3, from_lt=0)
@@ -156,12 +182,13 @@ async def send_tx_with_id(tx_id: int, wallet_address: str, private_key: bytes):
     boc = message.serialize().to_boc()
     await sendboc(boc)
 
+    add_new_tx(tx_id, wallet_address)
     tx_full_id = f"{tx_id}:{wallet_address}"
-    missing_txs.add(tx_full_id)
+    # missing_txs.add(tx_full_id)
     sent_count += 1
     print(f"Sent tx {tx_full_id}")
-    with open(out_sent, "a") as f:
-        f.write(tx_full_id + "\n")
+    # with open(out_sent, "a") as f:
+    #     f.write(tx_full_id + "\n")
 
 
 async def start_sending():
@@ -201,10 +228,11 @@ async def read_wallets():
 
 async def printer():
     while True:
+        missing_ids = get_missing_ids()
         print("--------------")
-        print("Missing txs:", list(missing_txs) or "-")
-        print(f"Found/sent: {sent_count - len(missing_txs)}/{sent_count}")
-        print("Success rate:", 1 - len(missing_txs) / (sent_count or 1))
+        print("Missing txs:", missing_ids or "-")
+        print(f"Found/sent: {sent_count - len(missing_ids)}/{sent_count}")
+        print("Success rate:", 1 - len(missing_ids) / (sent_count or 1))
         await asyncio.sleep(5)
 
 
@@ -224,10 +252,10 @@ if __name__ == "__main__":
 
     load_dotenv()
 
-    logs_path = os.getenv("LOGDIR") or "log"
-    os.makedirs(logs_path, exist_ok=True)
-    out_sent = logs_path + "/sent.txt"
-    out_found = logs_path + "/found.txt"
+    # logs_path = os.getenv("LOGDIR") or "log"
+    # os.makedirs(logs_path, exist_ok=True)
+    # out_sent = logs_path + "/sent.txt"
+    # out_found = logs_path + "/found.txt"
 
     wallets_path = os.getenv("WALLETS") or "wallets.txt"
 
@@ -237,7 +265,6 @@ if __name__ == "__main__":
         raise ValueError("Invalid PROVIDER env variable")
 
     if provider == "tonapi":
-        # raise NotImplementedError("TON API provider is not implemented yet")
         api_key = os.getenv("TONAPI_KEY")
         if not api_key:
             raise ValueError("No API_KEY env variable")
@@ -260,4 +287,25 @@ if __name__ == "__main__":
             raise ValueError("No API_URL or API_KEY env variable")
         client = TonCenterClient(api_url, api_key)
 
+    # default is for ex. db/liteserver.db
+    dbname = os.getenv("DBNAME", provider)
+
+    os.makedirs("db/", exist_ok=True)
+    connection = sqlite3.connect(f"db/{dbname}.db")
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+    CREATE TABLE IF NOT EXISTS txs (
+        addr TEXT,
+        utime INTEGER,
+        is_found BOOLEAN,
+        executed_in INTEGER,
+        found_in INTEGER,
+        PRIMARY KEY (addr, utime)
+    )
+    """
+    )
+
     asyncio.run(worker())
+    connection.close()
