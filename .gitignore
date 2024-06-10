@@ -9,3 +9,5 @@ __pycache__
 Session.vim
 mywallets/
 db/
+*.log
+*.zip
