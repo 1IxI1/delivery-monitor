@@ -11,3 +11,5 @@ mywallets/
 db/
 *.log
 *.zip
+analyze.py
+send_c5.py
