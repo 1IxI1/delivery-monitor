@@ -47,7 +47,6 @@ You may fill your `.env` in the following ways:
 ```bash
 WALLETS="wallets-testnet.txt"
 DBNAME="results" # file will be db/results.db
-TESNET=true
 PROVIDER="toncenter" # liteserver, tonapi
 TONCENTER_API_URL="https://testnet.toncenter.com/api/v2/"
 TONCENTER_API_KEY="3acfd04736431db1dbbe44a3b9921ee8b8ccb31c8373c947f5066a43afb0451b"
@@ -56,7 +55,6 @@ TONCENTER_API_KEY="3acfd04736431db1dbbe44a3b9921ee8b8ccb31c8373c947f5066a43afb04
 ```bash
 WALLETS="2-wallets-testnet.txt"
 DBNAME="ls-results"
-TESNET=true
 PROVIDER="liteserver" # toncenter, tonapi
 CONFIG="testnet-global.config.json"
 ```
