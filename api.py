@@ -94,17 +94,17 @@ def stats(path):
 
             result[interval_txt] = {
                 "txs": res[0],
-                "success_rate": round(res[1], 4),
-                "executed_in_avg": round(res[2], 2),
+                "success_rate": round(res[1] or 0, 4),
+                "executed_in_avg": round(res[2] or 0, 2),
                 "executed_in_min": res[3],
                 "executed_in_max": res[4],
                 # stdev = sqrt(variance)
-                "executed_in_sdev": round(math.sqrt(res[5]), 2),
-                "found_in_avg": round(res[6], 2),
+                "executed_in_sdev": round(math.sqrt(res[5] or 0), 2),
+                "found_in_avg": round(res[6] or 0, 2),
                 "found_in_min": res[7],
                 "found_in_max": res[8],
                 # stdev = sqrt(variance)
-                "found_in_sdev": round(math.sqrt(res[9]), 2),
+                "found_in_sdev": round(math.sqrt(res[9] or 0), 2),
             }
             last_len = res[0]
 

@@ -6,6 +6,7 @@ import sys
 import time
 
 from dotenv import load_dotenv
+from loguru import logger
 from pytonapi import AsyncTonapi
 from pytonapi.async_tonapi.client import json
 from pytoniq import LiteClient
@@ -24,12 +25,14 @@ wallets = []
 
 sent_count = 0
 
+
 def add_new_tx(tx_id: int, addr: str):
     cursor.execute(
         "INSERT INTO txs (addr, utime, is_found) VALUES (?, ?, 0)",
         (addr, tx_id),
     )
     connection.commit()
+
 
 def get_missing_ids():
     cursor.execute("SELECT addr, utime FROM txs WHERE is_found = 0")
@@ -54,15 +57,16 @@ def parse_and_add_msg(msg: Cell, blockutime: int, addr: str) -> bool:
     msg_slice.skip_bits(512)
     tx_id = msg_slice.load_uint(32)
     tx_full_id = f"{tx_id}:{addr}"
+
     if tx_full_id in get_missing_ids():
-        # missing_txs.remove(tx_full_id)
         current = int(time.time())
-        print(
+        logger.info(
             f"Found tx: {tx_full_id} at {current}. Executed in {blockutime - tx_id} sec. Found in {current - tx_id} sec."
         )
         executed_in = blockutime - tx_id
         found_in = current - tx_id
         make_found(tx_full_id, executed_in, found_in)
+        # logger.info(f"Found/sent: {sent_count - len(get_missing_ids())}/{sent_count}")
         return True
     else:
         return False
@@ -103,11 +107,9 @@ async def watch_transactions():
                             if isinstance(body, str):
                                 body = Cell.from_boc(body)[0]
                                 parse_and_add_msg(body, tx.utime, addr)
-                    # from pprint import pprint
-                    # pprint(txs)
                     await asyncio.sleep(2)
         except Exception as e:
-            print("watch_transactions failed, retrying:", e)
+            logger.warning("watch_transactions failed, retrying:", e)
         await asyncio.sleep(4)
 
 
@@ -133,8 +135,8 @@ async def sendboc(boc: bytes):
     if isinstance(client, LiteClient):
         await client.raw_send_message(boc)
     elif isinstance(client, TonCenterClient):
-        print(base64.b64encode(boc))
-        print(await client.send(boc))
+        logger.debug(base64.b64encode(boc))
+        logger.debug(await client.send(boc))
     else:
         # raise NotImplementedError("Tonapi or smth")
         api_body = {"boc": base64.b64encode(boc).decode()}
@@ -184,11 +186,8 @@ async def send_tx_with_id(tx_id: int, wallet_address: str, private_key: bytes):
 
     add_new_tx(tx_id, wallet_address)
     tx_full_id = f"{tx_id}:{wallet_address}"
-    # missing_txs.add(tx_full_id)
     sent_count += 1
-    print(f"Sent tx {tx_full_id}")
-    # with open(out_sent, "a") as f:
-    #     f.write(tx_full_id + "\n")
+    logger.info(f"Sent tx {tx_full_id}")
 
 
 async def start_sending():
@@ -199,7 +198,7 @@ async def start_sending():
                 await send_tx_with_id(tx_id, wdata["addr"], wdata["sk"])
             except Exception as e:
                 # raise e
-                print(
+                logger.warning(
                     "Failed to send tx with id",
                     tx_id,
                     "from wallet",
@@ -229,10 +228,12 @@ async def read_wallets():
 async def printer():
     while True:
         missing_ids = get_missing_ids()
-        print("--------------")
-        print("Missing txs:", missing_ids or "-")
-        print(f"Found/sent: {sent_count - len(missing_ids)}/{sent_count}")
-        print("Success rate:", 1 - len(missing_ids) / (sent_count or 1))
+        # print("--------------")
+        # print("Missing txs:", missing_ids or "-")
+        found = sent_count - len(missing_ids)
+        rate = max(found, 0) / (sent_count or 1)
+        logger.debug(f"Found/sent: {found}/{sent_count}, success rate: {rate}")
+        # logger.debug("Success rate:", 1 - len(missing_ids) / (sent_count or 1))
         await asyncio.sleep(5)
 
 
@@ -242,13 +243,20 @@ async def worker():
     asyncio.create_task(watch_transactions())
     asyncio.create_task(printer())
     await start_sending()
-    print(f"\nDone sending {sent_count} txs")
+    logger.info(f"\nDone sending {sent_count} txs")
 
 
 if __name__ == "__main__":
-    sends_count = 100
+    sends_count = 100000000  # ~ 200 years
+    mode = "service"  # without args - in systemd
+
     if len(sys.argv) > 1:
         sends_count = int(sys.argv[1])
+        mode = "cli"
+
+    if mode == "service":
+        logger.remove()
+        logger.add("externals.log", level="INFO", rotation="1 GB", compression="zip")
 
     load_dotenv()
 
@@ -261,8 +269,7 @@ if __name__ == "__main__":
 
     provider = os.getenv("PROVIDER")
     if not provider or provider not in ["toncenter", "liteserver", "tonapi"]:
-        print(provider)
-        raise ValueError("Invalid PROVIDER env variable")
+        raise ValueError(f"Invalid PROVIDER env variable: {provider}")
 
     if provider == "tonapi":
         api_key = os.getenv("TONAPI_KEY")
@@ -282,7 +289,6 @@ if __name__ == "__main__":
     elif provider == "toncenter":
         api_url = os.getenv("TONCENTER_API_URL")
         api_key = os.getenv("TONCENTER_API_KEY")
-        print(api_key)
         if not api_url or not api_key:
             raise ValueError("No API_URL or API_KEY env variable")
         client = TonCenterClient(api_url, api_key)
@@ -305,6 +311,11 @@ if __name__ == "__main__":
         PRIMARY KEY (addr, utime)
     )
     """
+    )
+
+    logger.warning(
+        f"Starting delivery monitoring for {provider.upper()} "
+        + f"for {sends_count} txs using {wallets_path} wallets."
     )
 
     asyncio.run(worker())
