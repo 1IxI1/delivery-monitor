@@ -13,3 +13,4 @@ db/
 *.zip
 analyze.py
 send_c5.py
+mnemonic.txt
