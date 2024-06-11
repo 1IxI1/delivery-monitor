@@ -14,3 +14,4 @@ analyze.py
 send_c5.py
 mnemonic.txt
 logger-code.boc
+log/

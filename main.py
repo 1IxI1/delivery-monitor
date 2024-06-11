@@ -285,16 +285,7 @@ if __name__ == "__main__":
         sends_count = int(sys.argv[1])
         mode = "cli"
 
-    if mode == "service":
-        logger.remove()
-        logger.add("externals.log", level="INFO", rotation="1 GB", compression="zip")
-
     load_dotenv()
-
-    # logs_path = os.getenv("LOGDIR") or "log"
-    # os.makedirs(logs_path, exist_ok=True)
-    # out_sent = logs_path + "/sent.txt"
-    # out_found = logs_path + "/found.txt"
 
     wallets_path = os.getenv("WALLETS") or "wallets.txt"
 
@@ -323,6 +314,14 @@ if __name__ == "__main__":
         if not api_url or not api_key:
             raise ValueError("No API_URL or API_KEY env variable")
         client = TonCenterClient(api_url, api_key)
+
+
+    # setting up logging
+    # service mode - in log/. cli mode - in stdout.
+    if mode == "service":
+        logger.remove()
+        os.makedirs("log/", exist_ok=True)
+        logger.add(f"log/externals-{provider}.log", level="INFO", rotation="1 GB", compression="zip")
 
     # default is for ex. db/liteserver.db
     dbname = os.getenv("DBNAME", provider)
