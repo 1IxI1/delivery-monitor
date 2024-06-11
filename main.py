@@ -2,6 +2,7 @@ import asyncio
 import base64
 import os
 import sqlite3
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -10,7 +11,7 @@ from dotenv import load_dotenv
 from loguru import logger
 from pytonapi import AsyncTonapi
 from pytonapi.async_tonapi.client import json
-from pytoniq import LiteClient
+from pytoniq import LiteClient, begin_cell
 from pytoniq.contract.wallets import Wallet
 from pytoniq_core import Builder
 from pytoniq_core.boc import Address, Cell
@@ -21,6 +22,7 @@ from client import TonCenterClient
 
 # from wallets import wallets
 
+valid_until_timeout = 60
 extended_message = False
 
 
@@ -28,7 +30,7 @@ extended_message = False
 class WalletInfo:
     addr: str
     sk: bytes
-    pk: bytes
+    pk_hex: str
 
 
 wallets = []  # type: list[WalletInfo]
@@ -64,8 +66,10 @@ def make_found(tx_full_id: str, executed_in: int, found_in: int):
 
 def parse_and_add_msg(msg: Cell, blockutime: int, addr: str) -> bool:
     msg_slice = msg.begin_parse()
-    msg_slice.skip_bits(512)
-    tx_id = msg_slice.load_uint(32)
+    msg_slice.skip_bits(512)  # signature
+    msg_slice.skip_bits(32)  # seqno
+    valid_until = msg_slice.load_uint(48)
+    tx_id = valid_until - valid_until_timeout  # get sending time
     tx_full_id = f"{tx_id}:{addr}"
 
     if tx_full_id in get_missing_ids():
@@ -148,7 +152,6 @@ async def sendboc(boc: bytes):
         logger.debug(base64.b64encode(boc))
         logger.debug(await client.send(boc))
     else:
-        # raise NotImplementedError("Tonapi or smth")
         api_body = {"boc": base64.b64encode(boc).decode()}
         await client.blockchain.send_message(body=api_body)
         await asyncio.sleep(2)
@@ -166,17 +169,38 @@ def extend_message_to_1kb(body: Builder):
     return body
 
 
-async def send_tx_with_id(tx_id: int, wdata: WalletInfo):
+async def send_tx_with_id(tx_utime: int, wdata: WalletInfo):
     global sent_count
     seqno = await get_seqno(wdata.addr)
 
-    # ext_msg_body#_ signature:bits512 some_value:uint32
-    #                valid_until:uint32 msg_seqno:uint32
-    #                = ExtMsgBody;
-    body = Builder()
-    body.store_uint(tx_id, 32)
-    body.store_uint(int(time.time()) + 9000, 32)
-    body.store_uint(seqno, 32)
+    # new compiled code will have updated seqno IN IT!! WOW
+    # and we'll just update the code instead of making c4 on-contract
+    new_code_hex = subprocess.check_output(
+        ["fift", "-s", "logger-c5.fif", str(seqno + 1), wdata.pk_hex]
+    ).decode()
+
+    new_seqno_code = Cell.from_boc(new_code_hex)[0]
+
+    # // Standard actions from block.tlb:
+    # out_list_empty$_ = OutList 0;
+    # out_list$_ {n:#} prev:^(OutList n) action:OutAction = OutList (n + 1);
+    # action_send_msg#0ec3c86d mode:(## 8) out_msg:^(MessageRelaxed Any) = OutAction;
+    # action_set_code#ad4de08e new_code:^Cell = OutAction;
+    action_set_code = (
+        begin_cell().store_uint(0xAD4DE08E, 32).store_ref(new_seqno_code).end_cell()
+    )
+    actions = (  # OutList 1
+        begin_cell()
+        .store_ref(begin_cell().end_cell())  # prev:^(OutList 0)
+        .store_slice(action_set_code.to_slice())
+        .end_cell()
+    )
+    body = (
+        begin_cell()
+        .store_uint(seqno, 32)
+        .store_uint(tx_utime + valid_until_timeout, 48)
+        .store_ref(actions)
+    )
 
     if extended_message:
         body = extend_message_to_1kb(body)
@@ -195,8 +219,8 @@ async def send_tx_with_id(tx_id: int, wdata: WalletInfo):
     boc = message.serialize().to_boc()
     await sendboc(boc)
 
-    add_new_tx(tx_id, wdata.addr)
-    tx_full_id = f"{tx_id}:{wdata.addr}"
+    add_new_tx(tx_utime, wdata.addr)
+    tx_full_id = f"{tx_utime}:{wdata.addr}"
     sent_count += 1
     logger.info(f"Sent tx {tx_full_id}")
 
@@ -228,7 +252,8 @@ async def read_wallets():
             seed = int(seed, 16)
             seed_bytes = seed.to_bytes(32, "big")
             public_key, private_key = keys.crypto_sign_seed_keypair(seed_bytes)
-            wallets.append(WalletInfo(addr=addr, pk=public_key, sk=private_key))
+            pk_hex = "0x" + public_key.hex()
+            wallets.append(WalletInfo(addr=addr, pk_hex=pk_hex, sk=private_key))
 
 
 async def printer():
