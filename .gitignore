@@ -7,6 +7,7 @@ __pycache__
 .blockstore/
 Session.vim
 mywallets/
+w/
 db/
 *.log
 *.zip
