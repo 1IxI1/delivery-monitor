@@ -4,6 +4,7 @@ import os
 import sqlite3
 import sys
 import time
+from dataclasses import dataclass
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -21,7 +22,16 @@ from client import TonCenterClient
 # from wallets import wallets
 
 extended_message = False
-wallets = []
+
+
+@dataclass
+class WalletInfo:
+    addr: str
+    sk: bytes
+    pk: bytes
+
+
+wallets = []  # type: list[WalletInfo]
 
 sent_count = 0
 
@@ -144,9 +154,21 @@ async def sendboc(boc: bytes):
         await asyncio.sleep(2)
 
 
-async def send_tx_with_id(tx_id: int, wallet_address: str, private_key: bytes):
+def extend_message_to_1kb(body: Builder):
+    # writing some mash data
+    extension1 = Builder().store_bits("11" * 499).end_cell()
+    extension2 = Builder().store_bits("01" * 499).end_cell()
+    extension3 = Builder().store_bits("10" * 499).end_cell()
+    body.store_ref(Builder().store_bits("11" * 500).store_ref(extension1).end_cell())
+    body.store_ref(Builder().store_bits("01" * 501).store_ref(extension2).end_cell())
+    body.store_ref(Builder().store_bits("10" * 502).store_ref(extension3).end_cell())
+    body.store_ref(Builder().store_bits("00" * 503).end_cell())
+    return body
+
+
+async def send_tx_with_id(tx_id: int, wdata: WalletInfo):
     global sent_count
-    seqno = await get_seqno(wallet_address)
+    seqno = await get_seqno(wdata.addr)
 
     # ext_msg_body#_ signature:bits512 some_value:uint32
     #                valid_until:uint32 msg_seqno:uint32
@@ -156,26 +178,15 @@ async def send_tx_with_id(tx_id: int, wallet_address: str, private_key: bytes):
     body.store_uint(int(time.time()) + 9000, 32)
     body.store_uint(seqno, 32)
 
-    if extended_message:  # making the size of 1MB
-        extension1 = Builder().store_bits("11" * 499).end_cell()
-        extension2 = Builder().store_bits("01" * 499).end_cell()
-        extension3 = Builder().store_bits("10" * 499).end_cell()
-        body.store_ref(
-            Builder().store_bits("11" * 500).store_ref(extension1).end_cell()
-        )
-        body.store_ref(
-            Builder().store_bits("01" * 501).store_ref(extension2).end_cell()
-        )
-        body.store_ref(
-            Builder().store_bits("10" * 502).store_ref(extension3).end_cell()
-        )
-        body.store_ref(Builder().store_bits("00" * 503).end_cell())
+    if extended_message:
+        body = extend_message_to_1kb(body)
+
     body = body.end_cell()
 
-    signature = sign_message(body.hash, private_key).signature
+    signature = sign_message(body.hash, wdata.sk).signature
     signed_body = Builder().store_bytes(signature).store_cell(body).end_cell()
 
-    addr = Address(wallet_address)
+    addr = Address(wdata.addr)
     message = Wallet.create_external_msg(
         dest=addr,
         body=signed_body,
@@ -184,8 +195,8 @@ async def send_tx_with_id(tx_id: int, wallet_address: str, private_key: bytes):
     boc = message.serialize().to_boc()
     await sendboc(boc)
 
-    add_new_tx(tx_id, wallet_address)
-    tx_full_id = f"{tx_id}:{wallet_address}"
+    add_new_tx(tx_id, wdata.addr)
+    tx_full_id = f"{tx_id}:{wdata.addr}"
     sent_count += 1
     logger.info(f"Sent tx {tx_full_id}")
 
@@ -195,14 +206,14 @@ async def start_sending():
         for wdata in wallets:
             tx_id = int(time.time())
             try:
-                await send_tx_with_id(tx_id, wdata["addr"], wdata["sk"])
+                await send_tx_with_id(tx_id, wdata)
             except Exception as e:
                 # raise e
                 logger.warning(
                     "Failed to send tx with id",
                     tx_id,
                     "from wallet",
-                    wdata["addr"],
+                    wdata.addr,
                     "error:",
                     str(e),
                 )
@@ -216,13 +227,8 @@ async def read_wallets():
             addr, seed = line.split()
             seed = int(seed, 16)
             seed_bytes = seed.to_bytes(32, "big")
-            _, private_key = keys.crypto_sign_seed_keypair(seed_bytes)
-            wallets.append(
-                {
-                    "addr": addr,
-                    "sk": private_key,
-                }
-            )
+            public_key, private_key = keys.crypto_sign_seed_keypair(seed_bytes)
+            wallets.append(WalletInfo(addr=addr, pk=public_key, sk=private_key))
 
 
 async def printer():
