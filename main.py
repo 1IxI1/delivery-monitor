@@ -234,14 +234,10 @@ async def start_sending():
             except Exception as e:
                 # raise e
                 logger.warning(
-                    "Failed to send tx with id",
-                    tx_id,
-                    "from wallet",
-                    wdata.addr,
-                    "error:",
-                    str(e),
+                    f"Failed to send tx with id {str(tx_id)} from wallet "
+                    + f"{wdata.addr} error: {str(e)}"
                 )
-        await asyncio.sleep(60)
+        await asyncio.sleep(120)
 
 
 async def read_wallets():
@@ -315,13 +311,17 @@ if __name__ == "__main__":
             raise ValueError("No API_URL or API_KEY env variable")
         client = TonCenterClient(api_url, api_key)
 
-
     # setting up logging
     # service mode - in log/. cli mode - in stdout.
     if mode == "service":
         logger.remove()
         os.makedirs("log/", exist_ok=True)
-        logger.add(f"log/externals-{provider}.log", level="INFO", rotation="1 GB", compression="zip")
+        logger.add(
+            f"log/externals-{provider}.log",
+            level="INFO",
+            rotation="1 GB",
+            compression="zip",
+        )
 
     # default is for ex. db/liteserver.db
     dbname = os.getenv("DBNAME", provider)
