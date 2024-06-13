@@ -16,3 +16,6 @@ send_c5.py
 mnemonic.txt
 logger-code.boc
 log/
+configs/*
+!configs/mainnet.json
+!configs/testnet.json
