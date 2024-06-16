@@ -22,12 +22,19 @@ Add as many wallets as you want.
 #### Run:
 
 ```bash
-cp .env.example .env
+cp monitors.json.example monitors.json
+# edit monitors.json as you need
 pip install -r requirements.txt
-python main.py 1000
+python start.py 1000
 ```
 
-This will send 1000 messages in total to your wallets. Not 1000 to each, but 1000 to all.
+It can run in server mode and in cli mode. First will write
+log in `monitor.json`, second will print all in stdout. \
+To choose, edit `"cli": true,` in `monitors.json`.
+
+If `"to_send"` is not set, script will infinetly monitor this provider.
+
+See more in Configuration section.
 
 ## What is log-wallet
 
@@ -50,30 +57,45 @@ See [logger-c5.fif](logger-c5.fif).
 
 ## Configuration
 
-You may fill your `.env` in the following ways:
+Here's an example of how you may fill `monitors.json`:
 
-```bash
-WALLETS="wallets-testnet.txt"
-DBNAME="results" # file will be db/results.db
-PROVIDER="toncenter" # liteserver, tonapi
-TONCENTER_API_URL="https://testnet.toncenter.com/api/v2/"
-TONCENTER_API_KEY="3acfd04736431db1dbbe44a3b9921ee8b8ccb31c8373c947f5066a43afb0451b"
+```json
+{
+    "cli": true,
+    "monitors": [
+        {
+            "enabled": true,
+            "provider": "liteserver",
+            "wallets": "mywallets/w-c5-1.txt",
+            "config": "configs/testnet.json",
+            "dbname": "ls",
+            "to_send": 10
+        },
+        {
+            "enabled": false,
+            "provider": "toncenter",
+            "wallets": "mywallets/w-c5-2.txt",
+            "toncenter_api_url": "https://testnet.toncenter.com/api/v2/",
+            "toncenter_api_key": "...",
+            "dbname": "tc"
+        },
+        {
+            "enabled": true,
+            "provider": "tonapi",
+            "wallets": "mywallets/w-c5-3.txt",
+            "testnet": true,
+            "tonapi_key": "..."
+        }
+    ]
+}
 ```
 
-```bash
-WALLETS="2-wallets-testnet.txt"
-DBNAME="ls-results"
-PROVIDER="liteserver" # toncenter, tonapi
-CONFIG="testnet-global.config.json"
-```
+This config will monitor 2 providers with different wallets.
 
-```bash
-WALLETS="wallets.txt"
-DBNAME="ta-mainnet-results"
-TESNET=true
-PROVIDER="tonapi" # liteserver, toncenter
-TONAPI_KEY="1234567890"
-```
+And the second, `toncenter`, is disabled here. it won't be monitored.
+
+`dbname` is the name of the database file in `db/` dir.
+If not set, it will equal specified `provider` (e.g. here `tonapi` will use `db/tonapi.db`).
 
 ## Results database
 

@@ -1,0 +1,28 @@
+{
+    "cli": true,
+    "monitors": [
+        {
+            "enabled": true,
+            "provider": "liteserver",
+            "wallets": "mywallets/w-c5-1.txt",
+            "config": "configs/testnet.json",
+            "dbname": "ls",
+            "to_send": 10
+        },
+        {
+            "enabled": false,
+            "provider": "toncenter",
+            "wallets": "mywallets/w-c5-2.txt",
+            "toncenter_api_url": "https://testnet.toncenter.com/api/v2/",
+            "toncenter_api_key": "...",
+            "dbname": "tc"
+        },
+        {
+            "enabled": true,
+            "provider": "tonapi",
+            "wallets": "mywallets/w-c5-3.txt",
+            "testnet": true,
+            "tonapi_key": "..."
+        }
+    ]
+}

@@ -19,3 +19,4 @@ log/
 configs/*
 !configs/mainnet.json
 !configs/testnet.json
+monitors.json
