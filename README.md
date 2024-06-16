@@ -25,7 +25,7 @@ Add as many wallets as you want.
 cp monitors.json.example monitors.json
 # edit monitors.json as you need
 pip install -r requirements.txt
-python start.py 1000
+python start.py
 ```
 
 It can run in server mode and in cli mode. First will write
