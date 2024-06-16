@@ -172,9 +172,13 @@ class TransactionsMonitor:
 
     async def send_tx_with_id(self, tx_utime: int, wdata: WalletInfo):
         seqno = await self.get_seqno(wdata.addr)
+
+        relative_path = "logger-c5.fif"
+        full_path = os.path.join(os.path.dirname(__file__), relative_path)
         new_code_hex = subprocess.check_output(
-            ["fift", "-s", "logger-c5.fif", str(seqno + 1), wdata.pk_hex]
+            ["fift", "-s", full_path, str(seqno + 1), wdata.pk_hex]
         ).decode()
+
         new_seqno_code = Cell.from_boc(new_code_hex)[0]
         action_set_code = (
             begin_cell().store_uint(0xAD4DE08E, 32).store_ref(new_seqno_code).end_cell()
