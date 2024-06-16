@@ -1,5 +1,4 @@
 my-config.json
-log*
 wallets.py
 .venv
 env
@@ -8,6 +7,16 @@ __pycache__
 .blockstore/
 Session.vim
 mywallets/
+w/
 db/
 *.log
 *.zip
+analyze.py
+send_c5.py
+mnemonic.txt
+logger-code.boc
+log/
+configs/*
+!configs/mainnet.json
+!configs/testnet.json
+monitors.json

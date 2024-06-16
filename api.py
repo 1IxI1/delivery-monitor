@@ -3,7 +3,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from flask import Flask
+from flask import Flask, request
 from flask_cors import CORS
 from loguru import logger
 from waitress import serve
@@ -36,6 +36,8 @@ def stats(path):
     if path not in ["liteserver", "toncenter", "tonapi"]:
         logger.debug(f"Invalid endpoint: {path}")
         return {"error": "endpoint must be: liteserver, toncenter, tonapi"}
+
+    addr = request.args.get("addr", "")
 
     # to close connection in case of exception
     class Connection:
@@ -70,8 +72,12 @@ def stats(path):
 
         last_len = 0
         for interval_txt, interval_sec in time_intervals:
+            addr_appendix = ""
+            if addr:
+                addr_appendix = f"AND addr = '{addr}'"
+
             cursor.execute(
-                """
+                f"""
                 SELECT COUNT(*), AVG(is_found),
 
                        AVG(executed_in), MIN(executed_in),
@@ -84,7 +90,9 @@ def stats(path):
                        -- variance of found_in
                        AVG(found_in*found_in) - AVG(found_in)*AVG(found_in)
 
-                FROM txs WHERE utime >= ? ORDER BY utime DESC LIMIT 1""",
+                FROM txs WHERE utime >= ?
+                {addr_appendix}
+                ORDER BY utime DESC LIMIT 1""",
                 (now - interval_sec,),
             )
 
