@@ -1,0 +1,14 @@
+[Unit]
+Description=TON delivery-monitor API.
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/victor/delivery-monitor
+ExecStart=/home/victor/delivery-monitor/.venv/bin/python3.10 /home/victor/delivery-monitor/api.py
+KillMode=process
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
