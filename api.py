@@ -114,7 +114,7 @@ def interval(path):
         return {"error": str(e)}
 
 
-@app.route("/<path:path>")
+@app.route("/stats/<path:path>")
 def get_processed(path):
     if path not in ["liteserver", "toncenter", "tonapi"]:
         logger.debug(f"Invalid endpoint: {path}")
