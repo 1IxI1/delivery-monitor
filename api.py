@@ -76,7 +76,7 @@ def interval(path):
             FROM txs WHERE utime >= ?
                 AND utime <= ?
             ORDER BY utime DESC LIMIT 1""",
-            (now - interval_sec, now - 60),
+            (now - 60 - interval_sec, now - 60),
         )
 
         res = cursor.fetchone()
