@@ -3,7 +3,7 @@ import json
 
 from loguru import logger
 from pytonapi import AsyncTonapi
-from pytoniq import LiteClient
+from pytoniq import LiteBalancer, LiteClient
 
 from client import TonCenterClient
 from monitor import TransactionsMonitor
@@ -20,7 +20,7 @@ async def start_monitor(monitor_params: dict):
     if provider == "liteserver":
         config_path = monitor_params["config"]
         config = json.loads(open(config_path).read())
-        client = LiteClient.from_config(config, timeout=15)
+        client = LiteBalancer.from_config(config, timeout=15)
 
     elif provider == "toncenter":
         api_url = monitor_params["toncenter_api_url"]

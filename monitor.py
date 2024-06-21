@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from loguru import logger
 from pytonapi import AsyncTonapi
 from pytonapi.async_tonapi.client import json
-from pytoniq import LiteClient, begin_cell
+from pytoniq import LiteBalancer, begin_cell
 from pytoniq.contract.wallets import Wallet
 from pytoniq_core import Builder
 from pytoniq_core.boc import Address, Cell
@@ -32,7 +32,7 @@ class WalletInfo:
 VALID_UNTIL_TIMEOUT = 60
 SEND_INTERVAL = 120
 
-Client = Union[LiteClient, TonCenterClient, AsyncTonapi]
+Client = Union[LiteBalancer, TonCenterClient, AsyncTonapi]
 
 
 class TransactionsMonitor:
@@ -73,8 +73,8 @@ class TransactionsMonitor:
         self.sent_count = 0
 
     async def init_client(self):
-        if isinstance(self.client, LiteClient):
-            await self.client.connect()
+        if isinstance(self.client, LiteBalancer):
+            await self.client.start_up()
         elif isinstance(self.client, TonCenterClient):
             pass
         else:
@@ -118,13 +118,13 @@ class TransactionsMonitor:
     async def get_seqno(self, address: str) -> int:
         if isinstance(self.client, TonCenterClient):
             return await self.client.seqno(address)
-        elif isinstance(self.client, LiteClient):
+        elif isinstance(self.client, LiteBalancer):
             return (await self.client.run_get_method(address, "seqno", []))[0]
         else:
             return (await self.client.wallet.get_account_seqno(address)) or 0
 
     async def sendboc(self, boc: bytes):
-        if isinstance(self.client, LiteClient):
+        if isinstance(self.client, LiteBalancer):
             await self.client.raw_send_message(boc)
         elif isinstance(self.client, TonCenterClient):
             await self.client.send(boc)
@@ -234,7 +234,7 @@ class TransactionsMonitor:
             try:
                 for tx_id in self.get_missing_ids():
                     addr = tx_id.split(":")[1]
-                    if isinstance(self.client, LiteClient):
+                    if isinstance(self.client, LiteBalancer):
                         txs = await self.client.get_transactions(addr, 3, from_lt=0)
                         for tx in txs:
                             if tx.in_msg is not None and tx.in_msg.is_external:
@@ -301,7 +301,7 @@ async def main():
     load_dotenv()
     dbname = "ls"
     config = json.loads(open("configs/testnet.json").read())
-    client = LiteClient.from_config(config, timeout=15)
+    client = LiteBalancer.from_config(config, timeout=15)
     wallets_path = "mywallets/w-c5-1.txt"
     monitor = TransactionsMonitor(client, wallets_path, dbname)
     await monitor.start_worker()
