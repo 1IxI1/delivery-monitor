@@ -17,7 +17,7 @@ def index():
     return {
         "error": "Invalid endpoint, my dear!",
         "hint": "Use /interval/liteserver?seconds=3600 or /stats/liteserver,",
-        "also": "replace 'liteserver' with 'toncenter' or 'tonapi'.",
+        "n also": "replace 'liteserver' with 'toncenter' or 'tonapi'.",
     }
 
 
