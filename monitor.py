@@ -121,7 +121,10 @@ class TransactionsMonitor:
         elif isinstance(self.client, LiteBalancer):
             return (await self.client.run_get_method(address, "seqno", []))[0]
         else:
-            return (await self.client.wallet.get_account_seqno(address)) or 0
+            res = await self.client.blockchain.execute_get_method(address, "seqno")
+            if res.success is False:
+                raise Exception(f"Error with tonapi get method: {res.exit_code}")
+            return int(res.decoded["state"]) if res.decoded else 0
 
     async def sendboc(self, boc: bytes):
         if isinstance(self.client, LiteBalancer):
