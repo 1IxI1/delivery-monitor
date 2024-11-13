@@ -14,7 +14,11 @@ CORS(app)
 
 @app.route("/")
 def index():
-    return {"error": "use /liteserver, /toncenter or /tonapi endpoints"}
+    return {
+        "error": "Invalid endpoint, my dear!",
+        "hint": "Use /interval/liteserver?seconds=3600 or /stats/liteserver,",
+        "also": "replace 'liteserver' with 'toncenter' or 'tonapi'.",
+    }
 
 
 time_intervals = [
