@@ -14,7 +14,7 @@ from pytonapi import AsyncTonapi
 from pytonapi.async_tonapi.client import json
 from pytoniq import LiteBalancer, begin_cell
 from pytoniq.contract.wallets import Wallet
-from pytoniq_core import Builder
+from pytoniq_core import Builder, StateInit
 from pytoniq_core.boc import Address, Cell
 from pytoniq_core.crypto import keys
 from tonsdk.utils import sign_message
@@ -29,8 +29,8 @@ class WalletInfo:
     pk_hex: str
 
 
-VALID_UNTIL_TIMEOUT = 60
-SEND_INTERVAL = 120
+VALID_UNTIL_TIMEOUT = 30
+SEND_INTERVAL = 30
 
 Client = Union[LiteBalancer, TonCenterClient, AsyncTonapi]
 
@@ -195,10 +195,11 @@ class TransactionsMonitor:
             .end_cell()
         )
 
-        # make a signature
+        # make a signature of `valid_until * seqno`
         valid_until = tx_utime + VALID_UNTIL_TIMEOUT
-        valid_until_bytes = valid_until.to_bytes(32, 'big')
-        signature = sign_message(valid_until_bytes, wdata.sk).signature
+        stamp = valid_until * seqno
+        stamp_bytes = stamp.to_bytes(32, "big")
+        signature = sign_message(stamp_bytes, wdata.sk).signature
 
         # build msg body
         body = (
@@ -317,7 +318,7 @@ class TransactionsMonitor:
 async def main():
     load_dotenv()
     dbname = "ls"
-    config = json.loads(open("configs/testnet.json").read())
+    config = json.loads(open("configs/mainnet.json").read())
     client = LiteBalancer.from_config(config, timeout=15)
     wallets_path = "mywallets/w-c5-1.txt"
     monitor = TransactionsMonitor(client, wallets_path, dbname)

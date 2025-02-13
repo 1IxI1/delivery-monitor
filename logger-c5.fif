@@ -62,9 +62,14 @@ $2 (number) 1 <> abort"not an integer: check your pubkey" =: pubkey
     // load c5 actions cell
     PLDREF // signature valid_until set_code_action
 
+    // mix valid_until and seqno for signature check
+    SWAP // signature set_code_action valid_until 
+    seqno INT MUL // signature set_code_action valid_until*seqno
+
+
     // check signature
-    s2 XCHG0 // set_code_action valid_until signature
-    pubkey INT // set_code_action valid_until signature pubkey
+    ROT // set_code_action valid_until*seqno signature
+    pubkey INT // set_code_action valid_until*seqno signature pubkey
     CHKSIGNU 35 THROWIFNOT  // set_code_action
 
     // now we're left with set_code_action
