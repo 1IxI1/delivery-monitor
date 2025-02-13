@@ -176,12 +176,14 @@ class TransactionsMonitor:
     async def send_tx_with_id(self, tx_utime: int, wdata: WalletInfo):
         seqno = await self.get_seqno(wdata.addr)
 
+        # compile new code
         relative_path = "logger-c5.fif"
         full_path = os.path.join(os.path.dirname(__file__), relative_path)
         new_code_hex = subprocess.check_output(
             ["fift", "-s", full_path, str(seqno + 1), wdata.pk_hex]
         ).decode()
 
+        # pack set_code action
         new_seqno_code = Cell.from_boc(new_code_hex)[0]
         action_set_code = (
             begin_cell().store_uint(0xAD4DE08E, 32).store_ref(new_seqno_code).end_cell()
@@ -192,24 +194,36 @@ class TransactionsMonitor:
             .store_slice(action_set_code.to_slice())
             .end_cell()
         )
+
+        # make a signature
+        valid_until = tx_utime + VALID_UNTIL_TIMEOUT
+        valid_until_bytes = valid_until.to_bytes(32, 'big')
+        signature = sign_message(valid_until_bytes, wdata.sk).signature
+
+        # build msg body
         body = (
             begin_cell()
+            .store_bytes(signature)
             .store_uint(seqno, 32)
-            .store_uint(tx_utime + VALID_UNTIL_TIMEOUT, 48)
+            .store_uint(valid_until, 48)
             .store_ref(actions)
         )
         if self.extended_message:
             body = self.extend_message_to_1kb(body)
         body = body.end_cell()
-        signature = sign_message(body.hash, wdata.sk).signature
-        signed_body = Builder().store_bytes(signature).store_cell(body).end_cell()
+
+        # make msg
         addr = Address(wdata.addr)
         message = Wallet.create_external_msg(
             dest=addr,
-            body=signed_body,
+            body=body,
         )
+
+        # send msg
         boc = message.serialize().to_boc()
         await self.sendboc(boc)
+
+        # add to db and log
         self.add_new_tx(tx_utime, wdata.addr)
         tx_full_id = f"{tx_utime}:{wdata.addr}"
         self.sent_count += 1
