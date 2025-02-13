@@ -45,27 +45,26 @@ $2 (number) 1 <> abort"not an integer: check your pubkey" =: pubkey
     // init stack: cs
     // (cs means cell slice)
 
-    // load signature and backup body
-    // (to check sign later)
-    512 INT LDSLICEX DUP // signature body cs
+    // load signature
+    512 INT LDSLICEX // signature cs
 
     // load and check seqno
-    32 LDU SWAP // signature body cs seqno
-    seqno INT // signature body cs seqno stored_seqno
-    EQUAL 82 THROWIFNOT  // signature body cs
+    32 LDU SWAP // signature cs seqno
+    seqno INT // signature cs seqno stored_seqno
+    EQUAL 82 THROWIFNOT  // signature cs
 
-    // check validity timeout
-    48 LDU SWAP // signature body cs valid_until
-    NOW // signature body cs valid_until now
-    GEQ 77 THROWIFNOT // signature body cs
+    // check timeout
+    48 LDU // signature valid_until cs 
+    OVER // signature valid_until cs valid_until
+    NOW // signature valid_until cs valid_until now
+    GEQ 77 THROWIFNOT // signature valid_until cs
 
-    // save c5 actions deep in stack
-    PLDREF // signature body set_code_action
-    -ROT // set_code_action signature body
-    
+    // load c5 actions cell
+    PLDREF // signature valid_until set_code_action
+
     // check signature
-    HASHSU SWAP // set_code_action msg_hash signature
-    pubkey INT // set_code_action msg_hash signature pubkey
+    s2 XCHG0 // set_code_action valid_until signature
+    pubkey INT // set_code_action valid_until signature pubkey
     CHKSIGNU 35 THROWIFNOT  // set_code_action
 
     // now we're left with set_code_action
