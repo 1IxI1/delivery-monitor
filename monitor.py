@@ -29,8 +29,8 @@ class WalletInfo:
     pk_hex: str
 
 
-VALID_UNTIL_TIMEOUT = 30
-SEND_INTERVAL = 30
+VALID_UNTIL_TIMEOUT = 60
+SEND_INTERVAL = 240
 
 Client = Union[LiteBalancer, TonCenterClient, AsyncTonapi]
 
