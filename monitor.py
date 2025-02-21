@@ -36,35 +36,59 @@ Client = Union[LiteBalancer, TonCenterClient, AsyncTonapi]
 
 
 class TransactionsMonitor:
-    def init_db(self):
-        os.makedirs("db/", exist_ok=True)
-        self.connection = sqlite3.connect(f"db/{self.dbname}.db")
-        self.cursor = self.connection.cursor()
+    dbname: str
+    connection: sqlite3.Connection
+    cursor: sqlite3.Cursor
+    dbname_second: Optional[str]
+    connection_second: sqlite3.Connection
+    cursor_second: sqlite3.Cursor
 
-        self.cursor.execute(
+    @property
+    def dbstr(self):
+        dbstr = self.dbname
+        if self.dbname_second:
+            dbstr += " -> " + self.dbname_second
+        return dbstr
+
+    def init_db(self, second_db: bool = False):
+        # if seconds db specified, we'll look (no send) for txs
+        # in the first db and write to second when found
+        os.makedirs("db/", exist_ok=True)
+        query = """
+            CREATE TABLE IF NOT EXISTS txs (
+                addr TEXT,
+                utime INTEGER,
+                is_found BOOLEAN,
+                executed_in INTEGER,
+                found_in INTEGER,
+                PRIMARY KEY (addr, utime)
+            )
             """
-        CREATE TABLE IF NOT EXISTS txs (
-            addr TEXT,
-            utime INTEGER,
-            is_found BOOLEAN,
-            executed_in INTEGER,
-            found_in INTEGER,
-            PRIMARY KEY (addr, utime)
-        )
-        """
-        )
-        self.connection.commit()
+        if not second_db:
+            self.connection = sqlite3.connect(f"db/{self.dbname}.db")
+            self.cursor = self.connection.cursor()
+            self.cursor.execute(query)
+            self.connection.commit()
+        else:
+            self.connection_second = sqlite3.connect(f"db/{self.dbname_second}.db")
+            self.cursor_second = self.connection_second.cursor()
+            self.cursor_second.execute(query)
+            self.connection_second.commit()
 
     def __init__(
         self,
         client: Client,
         wallets_path: str,
         dbname: str,
+        dbname_second: Optional[str] = None,
         to_send: Optional[int] = None,
         extended_message: bool = False,
     ):
         self.dbname = dbname
         self.init_db()
+        if dbname_second:
+            self.dbname_second = dbname_second
+            self.init_db(second_db=True)
         self.client = client
         self.wallets_path = wallets_path
         self.to_send = to_send
@@ -100,7 +124,10 @@ class TransactionsMonitor:
         self.connection.commit()
 
     def get_missing_ids(self) -> List[str]:
-        self.cursor.execute("SELECT addr, utime FROM txs WHERE is_found = 0")
+        self.cursor.execute(
+            "SELECT addr, utime FROM txs WHERE is_found = 0 AND utime > ?",
+            (int(time.time()) - 1200,),  # 20 min ago or newer
+        )
         result = self.cursor.fetchall()
         missing_ids = []
         for addr, utime in result:
@@ -109,11 +136,18 @@ class TransactionsMonitor:
 
     def make_found(self, tx_full_id: str, executed_in: int, found_in: int) -> None:
         utime, addr = tx_full_id.split(":")
-        self.cursor.execute(
-            "UPDATE txs SET is_found = 1, executed_in = ?, found_in = ? WHERE addr = ? AND utime = ?",
-            (executed_in, found_in, addr, utime),
-        )
-        self.connection.commit()
+        if not self.dbname_second:
+            self.cursor.execute(
+                "UPDATE txs SET is_found = 1, executed_in = ?, found_in = ? WHERE addr = ? AND utime = ?",
+                (executed_in, found_in, addr, utime),
+            )
+            self.connection.commit()
+        else:
+            self.cursor_second.execute(
+                "INSERT INTO txs (addr, utime, is_found, executed_in, found_in) VALUES (?, ?, 1, ?, ?)",
+                (addr, utime, executed_in, found_in),
+            )
+            self.connection_second.commit()
 
     async def get_seqno(self, address: str) -> int:
         if isinstance(self.client, TonCenterClient):
@@ -147,7 +181,7 @@ class TransactionsMonitor:
         if tx_full_id in self.get_missing_ids():
             current = int(time.time())
             logger.info(
-                f"{self.dbname}: Found tx: {tx_full_id} at {current}. Executed in {blockutime - tx_id} sec. Found in {current - tx_id} sec."
+                f"{self.dbstr}: Found tx: {tx_full_id} at {current}. Executed in {blockutime - tx_id} sec. Found in {current - tx_id} sec."
             )
             executed_in = blockutime - tx_id
             found_in = current - tx_id
@@ -228,7 +262,7 @@ class TransactionsMonitor:
         self.add_new_tx(tx_utime, wdata.addr)
         tx_full_id = f"{tx_utime}:{wdata.addr}"
         self.sent_count += 1
-        logger.info(f"{self.dbname}: Sent tx {tx_full_id}")
+        logger.info(f"{self.dbstr}: Sent tx {tx_full_id}")
 
     async def start_sending(self):
         """Txs sender. Sends them every `SEND_INTERVAL` seconds to
@@ -285,7 +319,7 @@ class TransactionsMonitor:
                         await asyncio.sleep(2)
             except Exception as e:
                 logger.warning(
-                    f"{self.dbname}: watch_transactions failed, retrying: {str(e)}"
+                    f"{self.dbstr}: watch_transactions failed, retrying: {str(e)}"
                 )
             await asyncio.sleep(4)
 
@@ -296,7 +330,7 @@ class TransactionsMonitor:
             found = self.sent_count - len(missing_ids)
             rate = max(found, 0) / (self.sent_count or 1)
             logger.debug(
-                f"{self.dbname}: Found/sent: {found}/{self.sent_count}, success rate: {rate}"
+                f"{self.dbstr}: Found/sent: {found}/{self.sent_count}, success rate: {rate}"
             )
             await asyncio.sleep(5)
 
@@ -304,17 +338,18 @@ class TransactionsMonitor:
         """This thing inits database and starts txs sending with txs watching.
         It should be run for every provider and every db separately."""
         logger.warning(
-            f"Starting worker to db/{self.dbname} of {self.to_send} txs using {self.wallets_path} wallets."
+            f"Starting worker {self.dbstr} of {self.to_send} txs using {self.wallets_path} wallets."
         )
         await self.init_client()
         await self.read_wallets()
         asyncio.create_task(self.watch_transactions())
         asyncio.create_task(self.printer())
-        await self.start_sending()
-        logger.info(f"\n{self.dbname}: Done sending {self.sent_count} txs")
+        if not self.dbname_second:  # read sended txs from first
+            await self.start_sending()
+        logger.info(f"\n{self.dbstr}: Done sending {self.sent_count} txs")
 
 
-# Usage example
+# example
 async def main():
     load_dotenv()
     dbname = "ls"
