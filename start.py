@@ -36,11 +36,17 @@ async def start_monitor(monitor_params: dict):
     if "dbname" in monitor_params:
         dbname = monitor_params["dbname"]
 
+    dbname_second = None
+    if "out_dbname" in monitor_params:
+        dbname_second = monitor_params["dbname_second"]
+
     to_send = None
     if "to_send" in monitor_params:
         to_send = int(monitor_params["to_send"])
 
-    monitor = TransactionsMonitor(client, wallets_path, dbname, to_send=to_send)
+    monitor = TransactionsMonitor(
+        client, wallets_path, dbname, dbname_second=dbname_second, to_send=to_send
+    )
     await monitor.start_worker()
 
 
