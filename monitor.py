@@ -331,6 +331,8 @@ class TransactionsMonitor:
                     elif isinstance(self.client, TonCenterV3Client):
                         txs = await self.client.get_transaction_by_hash(missing.msghash)
                         for tx in txs:
+                            from pprint import pprint
+                            pprint(tx)
                             if (
                                 "in_msg" in tx
                                 and tx["in_msg"]
@@ -342,6 +344,7 @@ class TransactionsMonitor:
                             ):
                                 body_b64 = tx["in_msg"]["msg_content"]["body"]
                                 body = Cell.from_boc(body_b64)[0]
+                                print("here")
                                 await self.parse_and_add_msg(body, tx["now"], addr)
 
                     else:
