@@ -153,8 +153,6 @@ class TonCenterV3Client(TonCenterClient):
                     "accept": "application/json",
                 },
             )
-            print(f"Request info: {r.request_info}")
-            print(f"Request URL: {str(r.url)}")
             response = await r.json()
             return response
         
