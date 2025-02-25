@@ -143,6 +143,7 @@ class TonCenterV3Client(TonCenterClient):
         super().__init__(api_url, api_key)
 
     async def get_transaction_by_hash(self, msg_hash: str):
+        q = self.provider.raw_get_account_state("")
         async with aiohttp.ClientSession() as session:
             r = await session.get(
                 f"{self.provider.base_url}/transactionsByMessage",
@@ -153,7 +154,10 @@ class TonCenterV3Client(TonCenterClient):
                     "accept": "application/json",
                 },
             )
-            return await r.json()
+            print(f"Request info: {r.request_info}")
+            print(f"Request URL: {str(r.url)}")
+            response = await r.json()
+            return response
         
     async def send(self, boc: bytes):
         q = self.provider.raw_send_message(boc)
