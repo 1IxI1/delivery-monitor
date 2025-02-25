@@ -6,7 +6,6 @@ from tonsdk.boc import Cell
 from tonsdk.provider import ToncenterClient, address_state, prepare_address
 from tonsdk.utils import TonCurrencyEnum, from_nano
 from tvm_valuetypes import serialize_tvm_stack
-from urllib.parse import quote
 
 
 class AbstractTonClient(ABC):
@@ -145,10 +144,9 @@ class TonCenterV3Client(TonCenterClient):
 
     async def get_transaction_by_hash(self, msg_hash: str):
         async with aiohttp.ClientSession() as session:
-            print(msg_hash)
             r = await session.get(
                 f"{self.provider.base_url}transactionsByMessage",
-                params={"msg_hash": quote(msg_hash)},
+                params={"msg_hash": msg_hash},
                 headers={
                     "X-API-Key": self.provider.api_key,
                     "Content-Type": "application/json",
