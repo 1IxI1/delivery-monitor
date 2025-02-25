@@ -145,13 +145,15 @@ class TonCenterV3Client(TonCenterClient):
     async def get_transaction_by_hash(self, msg_hash: str):
         q = self.provider.raw_get_account_state("")
         async with aiohttp.ClientSession() as session:
-            r = await session.get(
-                f"{self.provider.base_url}/transactionsByMessage",
-                params={"msg_hash": msg_hash},
-                headers={"X-API-Key": self.provider.api_key},
+            r = await q["func"](
+                session,
+                "transactionsByMessage",
+                params={
+                    "msg_hash": msg_hash,
+                },
             )
-            return await r.json()
-
+            return r
+        
     async def send(self, boc: bytes):
         q = self.provider.raw_send_message(boc)
 
