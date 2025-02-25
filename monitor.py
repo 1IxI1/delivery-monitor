@@ -65,7 +65,7 @@ class TransactionsMonitor:
             CREATE TABLE IF NOT EXISTS txs (
                 addr TEXT,
                 utime INTEGER,
-                msghash STRING
+                msghash STRING,
                 is_found BOOLEAN,
                 executed_in INTEGER,
                 found_in INTEGER,
