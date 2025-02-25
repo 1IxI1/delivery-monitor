@@ -5,7 +5,7 @@ from loguru import logger
 from pytonapi import AsyncTonapi
 from pytoniq import LiteBalancer, LiteClient
 
-from client import TonCenterClient
+from client import TonCenterClient, TonCenterV3Client
 from monitor import TransactionsMonitor
 
 filename = "monitors.json"
@@ -25,7 +25,10 @@ async def start_monitor(monitor_params: dict):
     elif provider == "toncenter":
         api_url = monitor_params["toncenter_api_url"]
         api_key = monitor_params["toncenter_api_key"]
-        client = TonCenterClient(api_url, api_key)
+        if monitor_params.get("v3", False):
+            client = TonCenterV3Client(api_url, api_key)
+        else:
+            client = TonCenterClient(api_url, api_key)
 
     else:  # provider == "tonapi":
         api_key = monitor_params["tonapi_key"]
@@ -56,7 +59,7 @@ async def start_all():
     # if server run - log to file.
     # otherwise it'll write to console
     if not data.get("cli", False):
-        print("Starting delivery monitor in server mode with logging to monitor.log.")
+        print("Starting delivery monitor in server mode with logging to monitor.log")
         logger.remove()
         logger.add(
             f"monitor.log",
