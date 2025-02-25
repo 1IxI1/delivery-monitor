@@ -320,6 +320,19 @@ class TransactionsMonitor:
                                     tx.in_msg.body, tx.now, addr
                                 )
 
+                    elif isinstance(self.client, TonCenterV3Client):
+                        txs = await self.client.get_transaction_by_hash(missing.msghash)
+                        for tx in txs:
+                            if (
+                                "in_msg" in tx
+                                and tx["in_msg"]
+                                and ("source" not in tx["in_msg"]
+                                    or tx["in_msg"]["source"] == "")
+                            ):
+                                body_b64 = tx["in_msg"]["msg_content"]["body"]
+                                body = Cell.from_boc(body_b64)[0]
+                                await self.parse_and_add_msg(body, tx["now"], addr)
+
                     elif isinstance(self.client, TonCenterClient):
                         txs = await self.client.get_transactions(addr, 3, from_lt=0)
                         for tx in txs:
@@ -332,25 +345,6 @@ class TransactionsMonitor:
                                 body_b64 = tx["in_msg"]["msg_data"]["body"]
                                 body = Cell.from_boc(body_b64)[0]
                                 await self.parse_and_add_msg(body, tx["utime"], addr)
-
-                    elif isinstance(self.client, TonCenterV3Client):
-                        txs = await self.client.get_transaction_by_hash(missing.msghash)
-                        for tx in txs:
-                            from pprint import pprint
-                            pprint(tx)
-                            if (
-                                "in_msg" in tx
-                                and tx["in_msg"]
-                                # from nowhere:
-                                and (
-                                    "source" not in tx["in_msg"]
-                                    or tx["in_msg"]["source"] == ""
-                                )
-                            ):
-                                body_b64 = tx["in_msg"]["msg_content"]["body"]
-                                body = Cell.from_boc(body_b64)[0]
-                                print("here")
-                                await self.parse_and_add_msg(body, tx["now"], addr)
 
                     else:
                         txs = await self.client.blockchain.get_account_transactions(
