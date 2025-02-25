@@ -19,7 +19,7 @@ from pytoniq_core.boc import Address, Cell
 from pytoniq_core.crypto import keys
 from tonsdk.utils import sign_message
 
-from client import TonCenterClient
+from client import TonCenterClient, TonCenterV3Client
 
 
 @dataclass
@@ -27,6 +27,13 @@ class WalletInfo:
     addr: str
     sk: bytes
     pk_hex: str
+
+
+@dataclass
+class MsgInfo:
+    addr: str
+    utime: int
+    msghash: str
 
 
 VALID_UNTIL_TIMEOUT = 60
@@ -58,6 +65,7 @@ class TransactionsMonitor:
             CREATE TABLE IF NOT EXISTS txs (
                 addr TEXT,
                 utime INTEGER,
+                msg_hash STRING
                 is_found BOOLEAN,
                 executed_in INTEGER,
                 found_in INTEGER,
@@ -101,7 +109,9 @@ class TransactionsMonitor:
             await self.client.start_up()
         elif isinstance(self.client, TonCenterClient):
             pass
-        else:
+        elif isinstance(self.client, TonCenterV3Client):
+            pass
+        elif isinstance(self.client, AsyncTonapi):
             pass
 
     async def read_wallets(self):
@@ -116,41 +126,43 @@ class TransactionsMonitor:
                 wallets.append(WalletInfo(addr=addr, pk_hex=pk_hex, sk=private_key))
         self.wallets = wallets
 
-    def add_new_tx(self, tx_id: int, addr: str) -> None:
+    def add_new_tx(self, msg: MsgInfo) -> None:
+        # insert in first db
         self.cursor.execute(
-            "INSERT INTO txs (addr, utime, is_found) VALUES (?, ?, 0)",
-            (addr, tx_id),
+            "INSERT INTO txs (addr, utime, msghash, is_found) VALUES (?, ?, ?, 0)",
+            (msg.addr, msg.utime, msg.msghash),
         )
         self.connection.commit()
 
-    def get_missing_ids(self) -> List[str]:
+    def get_missing_msgs(self) -> List[MsgInfo]:
         self.cursor.execute(
-            "SELECT addr, utime FROM txs WHERE is_found = 0 AND utime > ?",
+            "SELECT addr, utime, msghash FROM txs WHERE is_found = 0 AND utime > ?",
             (int(time.time()) - 1200,),  # 20 min ago or newer
         )
         result = self.cursor.fetchall()
-        missing_ids = []
-        for addr, utime in result:
-            missing_ids.append(f"{utime}:{addr}")
-        return missing_ids
+        msgs = []
+        for addr, utime, msghash in result:
+            msgs.append(MsgInfo(addr=addr, utime=utime, msghash=msghash))
+        return msgs
 
-    def make_found(self, tx_full_id: str, executed_in: int, found_in: int) -> None:
-        utime, addr = tx_full_id.split(":")
+    def make_found(self, msg: MsgInfo, executed_in: int, found_in: int) -> None:
         if not self.dbname_second:
             self.cursor.execute(
                 "UPDATE txs SET is_found = 1, executed_in = ?, found_in = ? WHERE addr = ? AND utime = ?",
-                (executed_in, found_in, addr, utime),
+                (executed_in, found_in, msg.addr, msg.utime),
             )
             self.connection.commit()
         else:
             self.cursor_second.execute(
-                "INSERT INTO txs (addr, utime, is_found, executed_in, found_in) VALUES (?, ?, 1, ?, ?)",
-                (addr, utime, executed_in, found_in),
+                "INSERT INTO txs (addr, utime, msghash, is_found, executed_in, found_in) VALUES (?, ?, 1, ?, ?)",
+                (msg.addr, msg.utime, msg.msghash, executed_in, found_in),
             )
             self.connection_second.commit()
 
     async def get_seqno(self, address: str) -> int:
-        if isinstance(self.client, TonCenterClient):
+        if isinstance(self.client, TonCenterClient) or isinstance(
+            self.client, TonCenterV3Client
+        ):
             return await self.client.seqno(address)
         elif isinstance(self.client, LiteBalancer):
             return (await self.client.run_get_method(address, "seqno", []))[0]
@@ -161,10 +173,12 @@ class TransactionsMonitor:
             return int(res.decoded["state"]) if res.decoded else 0
 
     async def sendboc(self, boc: bytes):
-        if isinstance(self.client, LiteBalancer):
-            await self.client.raw_send_message(boc)
-        elif isinstance(self.client, TonCenterClient):
+        if isinstance(self.client, TonCenterClient) or isinstance(
+            self.client, TonCenterV3Client
+        ):
             await self.client.send(boc)
+        elif isinstance(self.client, LiteBalancer):
+            await self.client.raw_send_message(boc)
         else:
             api_body = {"boc": base64.b64encode(boc).decode()}
             await self.client.blockchain.send_message(body=api_body)
@@ -176,22 +190,25 @@ class TransactionsMonitor:
         msg_slice.skip_bits(32)  # seqno
         valid_until = msg_slice.load_uint(48)
         tx_id = valid_until - VALID_UNTIL_TIMEOUT  # get sending time
-        tx_full_id = f"{tx_id}:{addr}"
 
-        if tx_full_id in self.get_missing_ids():
-            current = int(time.time())
-            logger.info(
-                f"{self.dbstr}: Found tx: {tx_full_id} at {current}. Executed in {blockutime - tx_id} sec. Found in {current - tx_id} sec."
-            )
-            executed_in = blockutime - tx_id
-            found_in = current - tx_id
-            self.make_found(tx_full_id, executed_in, found_in)
-            return True
+        for i in self.get_missing_msgs():
+            if i.msghash == base64.b64encode(msg.hash) and i.addr == addr:
+                msg_info = i
+                break
         else:
             return False
 
+        current = int(time.time())
+        logger.info(
+            f"{self.dbstr}: Found tx: {msg_info.utime}:{addr} at {current}. Executed in {blockutime - tx_id} sec. Found in {current - tx_id} sec."
+        )
+        executed_in = blockutime - tx_id
+        found_in = current - tx_id
+        self.make_found(msg_info, executed_in, found_in)
+        return True
+
     def extend_message_to_1kb(self, body: Builder):
-        # writing some mash data
+        # writing some misc data
         extension1 = Builder().store_bits("11" * 499).end_cell()
         extension2 = Builder().store_bits("01" * 499).end_cell()
         extension3 = Builder().store_bits("10" * 499).end_cell()
@@ -254,15 +271,16 @@ class TransactionsMonitor:
             body=body,
         )
 
-        # send msg
-        boc = message.serialize().to_boc()
-        await self.sendboc(boc)
+        # send msg and save hash
+        msg_cell = message.serialize()
+        hashstr = base64.b64encode(msg_cell.hash).decode()
+        await self.sendboc(msg_cell.to_boc())
 
         # add to db and log
-        self.add_new_tx(tx_utime, wdata.addr)
-        tx_full_id = f"{tx_utime}:{wdata.addr}"
+        self.add_new_tx(MsgInfo(addr=wdata.addr, utime=tx_utime, msghash=hashstr))
         self.sent_count += 1
-        logger.info(f"{self.dbstr}: Sent tx {tx_full_id}")
+        logger.info(f"{self.dbstr}: Sent tx with seqno {seqno}")
+        logger.debug(f"{self.dbstr}: Tx details - hash: {hashstr}, valid_until: {valid_until}, addr: {wdata.addr}, utime: {tx_utime}")
 
     async def start_sending(self):
         """Txs sender. Sends them every `SEND_INTERVAL` seconds to
@@ -284,8 +302,11 @@ class TransactionsMonitor:
         and adds them to found_tx_ids."""
         while True:
             try:
-                for tx_id in self.get_missing_ids():
-                    addr = tx_id.split(":")[1]
+                # go for possible multiple addresses
+                # it's rarely to have 1+ missings found in one request
+                for missing in self.get_missing_msgs():
+                    addr = missing.addr
+
                     if isinstance(self.client, LiteBalancer):
                         txs = await self.client.get_transactions(addr, 3, from_lt=0)
                         for tx in txs:
@@ -306,6 +327,23 @@ class TransactionsMonitor:
                                 body_b64 = tx["in_msg"]["msg_data"]["body"]
                                 body = Cell.from_boc(body_b64)[0]
                                 await self.parse_and_add_msg(body, tx["utime"], addr)
+
+                    elif isinstance(self.client, TonCenterV3Client):
+                        txs = await self.client.get_transaction_by_hash(missing.msghash)
+                        for tx in txs:
+                            if (
+                                "in_msg" in tx
+                                and tx["in_msg"]
+                                # from nowhere:
+                                and (
+                                    "source" not in tx["in_msg"]
+                                    or tx["in_msg"]["source"] == ""
+                                )
+                            ):
+                                body_b64 = tx["in_msg"]["msg_content"]["body"]
+                                body = Cell.from_boc(body_b64)[0]
+                                await self.parse_and_add_msg(body, tx["now"], addr)
+
                     else:
                         txs = await self.client.blockchain.get_account_transactions(
                             addr, limit=3
@@ -317,6 +355,7 @@ class TransactionsMonitor:
                                     body = Cell.from_boc(body)[0]
                                     await self.parse_and_add_msg(body, tx.utime, addr)
                         await asyncio.sleep(2)
+
             except Exception as e:
                 logger.warning(
                     f"{self.dbstr}: watch_transactions failed, retrying: {str(e)}"
@@ -326,7 +365,7 @@ class TransactionsMonitor:
     async def printer(self):
         """Prints some stats about sent txs every 5 sec."""
         while True:
-            missing_ids = self.get_missing_ids()
+            missing_ids = self.get_missing_msgs()
             found = self.sent_count - len(missing_ids)
             rate = max(found, 0) / (self.sent_count or 1)
             logger.debug(
