@@ -393,6 +393,9 @@ class TransactionsMonitor:
         asyncio.create_task(self.printer())
         if not self.dbname_second:  # read sended txs from first
             await self.start_sending()
+        else:
+            while True:
+                await asyncio.sleep(1)
         logger.info(f"\n{self.dbstr}: Done sending {self.sent_count} txs")
 
 
