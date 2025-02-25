@@ -216,10 +216,10 @@ class TransactionsMonitor:
         msg_slice.skip_bits(512)  # signature
         msg_slice.skip_bits(32)  # seqno
         valid_until = msg_slice.load_uint(48)
-        tx_id = valid_until - VALID_UNTIL_TIMEOUT  # get sending time
+        msg_sent_at = valid_until - VALID_UNTIL_TIMEOUT  # get sending time
 
         for i in self.get_missing_msgs():
-            if i.msghash == base64.urlsafe_b64encode(msg.hash).decode() and i.addr == addr:
+            if i.utime == msg_sent_at and i.addr == addr:
                 self.insert_found_msg(i, blockutime)
                 return True
         return False
@@ -343,6 +343,7 @@ class TransactionsMonitor:
 
                     elif isinstance(self.client, TonCenterClient):
                         txs = await self.client.get_transactions(addr, 3, from_lt=0)
+                        print(txs)
                         for tx in txs:
                             if (
                                 "in_msg" in tx
