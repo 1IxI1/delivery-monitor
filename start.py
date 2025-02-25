@@ -41,7 +41,7 @@ async def start_monitor(monitor_params: dict):
 
     dbname_second = None
     if "out_dbname" in monitor_params:
-        dbname_second = monitor_params["dbname_second"]
+        dbname_second = monitor_params["out_dbname"]
 
     to_send = None
     if "to_send" in monitor_params:
