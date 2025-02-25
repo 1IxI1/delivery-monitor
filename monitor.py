@@ -343,7 +343,6 @@ class TransactionsMonitor:
 
                     elif isinstance(self.client, TonCenterClient):
                         txs = await self.client.get_transactions(addr, 3, from_lt=0)
-                        print(txs)
                         for tx in txs:
                             if (
                                 "in_msg" in tx
