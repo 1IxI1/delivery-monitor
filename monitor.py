@@ -189,6 +189,15 @@ class TransactionsMonitor:
             await self.client.blockchain.send_message(body=api_body)
             await asyncio.sleep(2)
 
+    def insert_found_msg(self, msg_info: MsgInfo, blockutime: int) -> None:
+        current = int(time.time())
+        logger.info(
+            f"{self.dbstr}: Found tx: {msg_info.utime}:{msg_info.addr} at {current}. Executed in {blockutime - msg_info.utime} sec. Found in {current - msg_info.utime} sec."
+        )
+        executed_in = blockutime - msg_info.utime
+        found_in = current - msg_info.utime
+        self.make_found(msg_info, executed_in, found_in)
+
     async def parse_and_add_msg(self, msg: Cell, blockutime: int, addr: str) -> bool:
         msg_slice = msg.begin_parse()
         msg_slice.skip_bits(512)  # signature
@@ -198,19 +207,10 @@ class TransactionsMonitor:
 
         for i in self.get_missing_msgs():
             if i.msghash == base64.urlsafe_b64encode(msg.hash).decode() and i.addr == addr:
-                msg_info = i
-                break
-        else:
-            return False
-
-        current = int(time.time())
-        logger.info(
-            f"{self.dbstr}: Found tx: {msg_info.utime}:{addr} at {current}. Executed in {blockutime - tx_id} sec. Found in {current - tx_id} sec."
-        )
-        executed_in = blockutime - tx_id
-        found_in = current - tx_id
-        self.make_found(msg_info, executed_in, found_in)
-        return True
+                self.insert_found_msg(i, blockutime)
+                return True
+        return False
+    
 
     def extend_message_to_1kb(self, body: Builder):
         # writing some misc data
@@ -324,9 +324,9 @@ class TransactionsMonitor:
                         txs = await self.client.get_transaction_by_hash(missing.msghash)
                         if len(txs['transactions']) > 0:
                             tx = txs['transactions'][0]
-                            body_b64 = tx["in_msg"]["msg_content"]["body"]
+                            body_b64 = tx["in_msg"]["message_content"]["body"]
                             body = Cell.from_boc(body_b64)[0]
-                            await self.parse_and_add_msg(body, tx["now"], addr)
+                            self.insert_found_msg(missing, tx["now"])
 
                     elif isinstance(self.client, TonCenterClient):
                         txs = await self.client.get_transactions(addr, 3, from_lt=0)
