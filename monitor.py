@@ -197,7 +197,7 @@ class TransactionsMonitor:
         tx_id = valid_until - VALID_UNTIL_TIMEOUT  # get sending time
 
         for i in self.get_missing_msgs():
-            if i.msghash == base64.b64encode(msg.hash) and i.addr == addr:
+            if i.msghash == base64.urlsafe_b64encode(msg.hash).decode() and i.addr == addr:
                 msg_info = i
                 break
         else:
@@ -278,7 +278,7 @@ class TransactionsMonitor:
 
         # send msg and save hash
         msg_cell = message.serialize()
-        hashstr = base64.b64encode(msg_cell.hash).decode()
+        hashstr = base64.urlsafe_b64encode(msg_cell.hash).decode()
         await self.sendboc(msg_cell.to_boc())
 
         # add to db and log
