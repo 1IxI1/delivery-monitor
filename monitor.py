@@ -138,14 +138,27 @@ class TransactionsMonitor:
         self.connection.commit()
 
     def get_missing_msgs(self) -> List[MsgInfo]:
+        current_time = int(time.time())
         self.cursor.execute(
             "SELECT addr, utime, msghash FROM txs WHERE is_found = 0 AND utime > ?",
-            (int(time.time()) - 1200,),  # 20 min ago or newer
+            (current_time - 1200,),  # 20 min ago or newer
         )
         result = self.cursor.fetchall()
         msgs = []
         for addr, utime, msghash in result:
             msgs.append(MsgInfo(addr=addr, utime=utime, msghash=msghash))
+        
+        if self.dbname_second and self.cursor_second:
+            # get message hashes found in second DB in last 20 minutes
+            self.cursor_second.execute(
+                "SELECT msghash FROM txs WHERE is_found = 1 AND utime > ?",
+                (current_time - 1200,)
+            )
+            found_hashes = {row[0] for row in self.cursor_second.fetchall()}
+            
+            # filter results, excluding already found hashes
+            msgs = [msg for msg in msgs if msg.msghash not in found_hashes]
+        
         return msgs
 
     def make_found(self, msg: MsgInfo, executed_in: int, found_in: int) -> None:
