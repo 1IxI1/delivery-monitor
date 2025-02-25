@@ -159,7 +159,7 @@ class TransactionsMonitor:
             if self.cursor_second is None or self.connection_second is None:
                 raise RuntimeError("Secondary database is not initialized")
             self.cursor_second.execute(
-                "INSERT INTO txs (addr, utime, msghash, is_found, executed_in, found_in) VALUES (?, ?, ?, 1, ?, ?)",
+                "INSERT OR IGNORE INTO txs (addr, utime, msghash, is_found, executed_in, found_in) VALUES (?, ?, ?, 1, ?, ?)",
                 (msg.addr, msg.utime, msg.msghash, executed_in, found_in),
             )
             self.connection_second.commit()
