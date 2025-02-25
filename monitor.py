@@ -365,6 +365,7 @@ class TransactionsMonitor:
                         await asyncio.sleep(2)
 
             except Exception as e:
+                raise e
                 logger.warning(
                     f"{self.dbstr}: watch_transactions failed, retrying: {str(e)}"
                 )
