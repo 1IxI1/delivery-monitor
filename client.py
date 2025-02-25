@@ -147,8 +147,8 @@ class TonCenterV3Client(TonCenterClient):
         q = self.provider.raw_get_account_state("")
         async with aiohttp.ClientSession() as session:
             r = await session.get(
-                f"{self.provider.base_url}/transaction",
-                params={"hash": quote(msg_hash)},
+                f"{self.provider.base_url}/transactionsByMessage",
+                params={"msg_hash": quote(msg_hash)},
                 headers={
                     "X-API-Key": self.provider.api_key,
                     "Content-Type": "application/json",
