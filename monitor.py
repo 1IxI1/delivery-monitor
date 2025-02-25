@@ -322,6 +322,7 @@ class TransactionsMonitor:
 
                     elif isinstance(self.client, TonCenterV3Client):
                         txs = await self.client.get_transaction_by_hash(missing.msghash)
+                        print(txs)
                         for tx in txs:
                             if (
                                 "in_msg" in tx
