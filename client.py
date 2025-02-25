@@ -138,4 +138,26 @@ class TonCenterClient(AbstractTonClient):
             return r
 
 
-__all__ = ["TonCenterClient"]
+class TonCenterV3Client(TonCenterClient):
+    def __init__(self, api_url: str, api_key: str):
+        super().__init__(api_url, api_key)
+
+    async def get_transaction_by_hash(self, msg_hash: str):
+        q = self.provider.raw_get_account_state("")
+        async with aiohttp.ClientSession() as session:
+            r = await session.get(
+                f"{self.provider.base_url}/transactionsByMessage",
+                params={"msg_hash": msg_hash},
+                headers={"X-API-Key": self.provider.api_key},
+            )
+            return await r.json()
+
+    async def send(self, boc: bytes):
+        q = self.provider.raw_send_message(boc)
+
+        async with aiohttp.ClientSession() as session:
+            r = await q["func"](session, *q["args"], **q["kwargs"])
+            return r
+
+
+__all__ = ["TonCenterClient", "TonCenterV3Client"]
