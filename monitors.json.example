@@ -10,6 +10,14 @@
             "to_send": 10
         },
         {
+            "enabled": true,
+            "provider": "tonapi",
+            "tonapi_key": "...",
+            "wallets": "mywallets/w-c5-1.txt",
+            "dbname": "ls",
+            "out_dbname": "tonapi-detects-ls"
+        },
+        {
             "enabled": false,
             "provider": "toncenter",
             "wallets": "mywallets/w-c5-2.txt",

@@ -75,7 +75,12 @@ def interval(path):
                    AVG(found_in), MIN(found_in),
                    MAX(found_in),
                    -- variance of found_in
-                   AVG(found_in*found_in) - AVG(found_in)*AVG(found_in)
+                   AVG(found_in*found_in) - AVG(found_in)*AVG(found_in),
+
+                   AVG(commited_in), MIN(commited_in),
+                   MAX(commited_in),
+                   -- variance of commited_in
+                   AVG(commited_in*commited_in) - AVG(commited_in)*AVG(commited_in)
 
             FROM txs WHERE utime >= ?
                 AND utime <= ?
@@ -101,6 +106,10 @@ def interval(path):
             "found_in_max": res[8],
             # stdev = sqrt(variance)
             "found_in_sdev": round(math.sqrt(res[9] or 0), 2),
+            "commited_in_avg": round(res[10] or 0, 2),
+            "commited_in_min": res[11],
+            "commited_in_max": res[12],
+            "commited_in_sdev": round(math.sqrt(res[13] or 0), 2),
         }
 
         connection.close()
@@ -159,7 +168,12 @@ def get_processed(path):
                        AVG(found_in), MIN(found_in),
                        MAX(found_in),
                        -- variance of found_in
-                       AVG(found_in*found_in) - AVG(found_in)*AVG(found_in)
+                       AVG(found_in*found_in) - AVG(found_in)*AVG(found_in),
+
+                       AVG(commited_in), MIN(commited_in),
+                       MAX(commited_in),
+                       -- variance of commited_in
+                       AVG(commited_in*commited_in) - AVG(commited_in)*AVG(commited_in)
 
                 FROM txs WHERE utime >= ?
                 {addr_appendix}
@@ -184,6 +198,10 @@ def get_processed(path):
                 "found_in_max": res[8],
                 # stdev = sqrt(variance)
                 "found_in_sdev": round(math.sqrt(res[9] or 0), 2),
+                "commited_in_avg": round(res[10] or 0, 2),
+                "commited_in_min": res[11],
+                "commited_in_max": res[12],
+                "commited_in_sdev": round(math.sqrt(res[13] or 0), 2),
             }
             last_len = res[0]
 
