@@ -54,7 +54,7 @@ class TransactionsMonitor:
     def dbstr(self):
         dbstr = self.dbname
         if self.dbname_second:
-            dbstr += " -> " + self.dbname_second
+            dbstr += "->" + self.dbname_second
         return dbstr
 
     def init_db(self, second_db: bool = False):
@@ -69,7 +69,7 @@ class TransactionsMonitor:
                 is_found BOOLEAN,
                 executed_in INTEGER,
                 found_in INTEGER,
-                commited_at INTEGER,
+                commited_in INTEGER,
                 PRIMARY KEY (addr, utime)
             )
             """
@@ -162,19 +162,19 @@ class TransactionsMonitor:
         
         return msgs
 
-    def make_found(self, msg: MsgInfo, executed_in: int, found_in: int, commited_at: int) -> None:
+    def make_found(self, msg: MsgInfo, executed_in: int, found_in: int, commited_in: int) -> None:
         if not self.dbname_second:
             self.cursor.execute(
-                "UPDATE txs SET is_found = 1, executed_in = ?, found_in = ?, commited_at = ? WHERE addr = ? AND utime = ?",
-                (executed_in, found_in, commited_at, msg.addr, msg.utime),
+                "UPDATE txs SET is_found = 1, executed_in = ?, found_in = ?, commited_in = ? WHERE addr = ? AND utime = ?",
+                (executed_in, found_in, commited_in, msg.addr, msg.utime),
             )
             self.connection.commit()
         else:
             if self.cursor_second is None or self.connection_second is None:
                 raise RuntimeError("Secondary database is not initialized")
             self.cursor_second.execute(
-                "INSERT OR IGNORE INTO txs (addr, utime, msghash, is_found, executed_in, found_in, commited_at) VALUES (?, ?, ?, 1, ?, ?, ?)",
-                (msg.addr, msg.utime, msg.msghash, executed_in, found_in, commited_at),
+                "INSERT OR IGNORE INTO txs (addr, utime, msghash, is_found, executed_in, found_in, commited_in) VALUES (?, ?, ?, 1, ?, ?, ?)",
+                (msg.addr, msg.utime, msg.msghash, executed_in, found_in, commited_in),
             )
             self.connection_second.commit()
 
@@ -204,12 +204,14 @@ class TransactionsMonitor:
             await asyncio.sleep(2)
 
     def insert_found_msg(self, msg_info: MsgInfo, blockutime: int, found_at: int, commited_at: int) -> None:
-        logger.info(
-            f"{self.dbstr}: Found tx: {msg_info.utime}:{msg_info.addr} at {found_at}. Executed in {blockutime - msg_info.utime} sec. Found in {found_at - msg_info.utime} sec."
-        )
         executed_in = blockutime - msg_info.utime
         found_in = found_at - msg_info.utime
-        self.make_found(msg_info, executed_in, found_in, commited_at)
+        commited_in = commited_at - msg_info.utime
+        logger.info(
+            f"{self.dbstr}: Found tx: {msg_info.utime}:{msg_info.addr}. Executed in {executed_in} sec. Found in {found_in} sec. Commited in {commited_in} sec."
+        )
+
+        self.make_found(msg_info, executed_in, found_in, commited_in)
 
     async def parse_and_add_msg(self, msg: Cell, found_at: int, blockutime: int, commited_at: int, addr: str) -> bool:
         """Check msg validity and add it to found_tx_ids"""
