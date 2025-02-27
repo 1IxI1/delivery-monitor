@@ -7,11 +7,11 @@ import sys
 import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
+import json
 
 from dotenv import load_dotenv
 from loguru import logger
 from pytonapi import AsyncTonapi
-from pytonapi.schema import json
 from pytoniq import LiteBalancer, begin_cell
 from pytoniq.contract.wallets import Wallet
 from pytoniq_core import Builder, StateInit
