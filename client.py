@@ -129,7 +129,33 @@ class TonCenterClient(AbstractTonClient):
                 },
             )
             return r
-
+        
+    async def lookup_block(self, wc: int = 0, shard: int | None = None, seqno: int | None = None, lt: int | None = None, unixtime: int | None = None):
+        q = self.provider.raw_get_account_state("") # just for getting base url
+        async with aiohttp.ClientSession() as session:
+            r = await q["func"](
+                session,
+                "lookupBlock",
+                params={
+                    "workchain": wc,
+                    "shard": shard or None,
+                    "seqno": seqno,
+                    "lt": lt,
+                    "unixtime": unixtime,
+                },
+            )
+            return r
+        
+    async def get_shards(self, seqno: int):
+        q = self.provider.raw_get_account_state("") # just for getting base url
+        async with aiohttp.ClientSession() as session:
+            r = await q["func"](
+                session,
+                "shards",
+                params={"seqno": seqno},
+            )
+            return r
+        
     async def send(self, boc: bytes):
         q = self.provider.raw_send_message(boc)
 
@@ -155,6 +181,25 @@ class TonCenterV3Client(TonCenterClient):
             )
             response = await r.json()
             return response
+    
+    async def get_blocks(self, wc: int = 0, shard: int | None = None, seqno: int | None = None, limit: int = 10):
+        """Only some of params yet implemented, just for this monitoring"""
+        async with aiohttp.ClientSession() as session:
+            r = await session.get(
+                f"{self.provider.base_url}blocks",
+                headers={
+                    "X-API-Key": self.provider.api_key,
+                    "Content-Type": "application/json",
+                    "accept": "application/json",
+                },
+                params={
+                    "workchain": wc,
+                    "shard": shard,
+                    "seqno": seqno,
+                    "limit": limit,
+                },
+            )
+            return await r.json()
         
     async def send(self, boc: bytes):
         q = self.provider.raw_send_message(boc)
