@@ -1,6 +1,6 @@
 import asyncio
-from abc import ABC, abstractmethod
 import base64
+from abc import ABC, abstractmethod
 
 import aiohttp
 from tonsdk.boc import Cell
@@ -126,16 +126,19 @@ class TonCenterClient(AbstractTonClient):
                 "archival": archival,
             }
             params = {k: v for k, v in params.items() if v is not None}
-            
-            r = await q["func"](
-                session,
-                "getTransactions",
-                params=params
-            )
+
+            r = await q["func"](session, "getTransactions", params=params)
             return r
-        
-    async def lookup_block(self, wc: int = 0, shard: int | None = None, seqno: int | None = None, lt: int | None = None, unixtime: int | None = None):
-        q = self.provider.raw_get_account_state("") # just for getting base url
+
+    async def lookup_block(
+        self,
+        wc: int = 0,
+        shard: int | None = None,
+        seqno: int | None = None,
+        lt: int | None = None,
+        unixtime: int | None = None,
+    ):
+        q = self.provider.raw_get_account_state("")  # just for getting base url
         async with aiohttp.ClientSession() as session:
             params = {
                 "workchain": wc,
@@ -145,16 +148,12 @@ class TonCenterClient(AbstractTonClient):
                 "unixtime": unixtime,
             }
             params = {k: v for k, v in params.items() if v is not None}
-            
-            r = await q["func"](
-                session,
-                "lookupBlock",
-                params=params
-            )
+
+            r = await q["func"](session, "lookupBlock", params=params)
             return r
-        
+
     async def get_shards(self, seqno: int):
-        q = self.provider.raw_get_account_state("") # just for getting base url
+        q = self.provider.raw_get_account_state("")  # just for getting base url
         async with aiohttp.ClientSession() as session:
             r = await q["func"](
                 session,
@@ -162,7 +161,7 @@ class TonCenterClient(AbstractTonClient):
                 params={"seqno": seqno},
             )
             return r
-        
+
     async def send(self, boc: bytes):
         q = self.provider.raw_send_message(boc)
 
@@ -189,18 +188,19 @@ class TonCenterV3Client(TonCenterClient):
             )
             response = await r.json()
             return response
-    
-    async def get_blocks(self, wc: int = 0, shard: int | None = None, seqno: int | None = None, limit: int = 10):
+
+    async def get_blocks(
+        self,
+        wc: int = 0,
+        shard: int | None = None,
+        seqno: int | None = None,
+        limit: int = 10,
+    ):
         """Only some of params yet implemented, just for this monitoring"""
         async with aiohttp.ClientSession() as session:
-            params = {
-                "workchain": wc,
-                "shard": shard,
-                "seqno": seqno,
-                "limit": limit
-            }
+            params = {"workchain": wc, "shard": shard, "seqno": seqno, "limit": limit}
             params = {k: v for k, v in params.items() if v is not None}
-            
+
             r = await session.get(
                 f"{self.provider.base_url}blocks",
                 headers={
@@ -208,10 +208,10 @@ class TonCenterV3Client(TonCenterClient):
                     "Content-Type": "application/json",
                     "accept": "application/json",
                 },
-                params=params
+                params=params,
             )
             return await r.json()
-        
+
     async def send(self, boc: bytes) -> str:
         """Returns message hash in base64 format"""
         serialized_boc = base64.b64encode(boc).decode()
@@ -223,13 +223,13 @@ class TonCenterV3Client(TonCenterClient):
                     "Content-Type": "application/json",
                     "accept": "application/json",
                 },
-                json={"boc": serialized_boc}
+                json={"boc": serialized_boc},
             )
             resjson = await r.json()
             if "message_hash" not in resjson:
                 raise Exception(f"Failed to send message: {resjson}")
             return resjson["message_hash"]
-        
+
     async def get_seqno(self, addr: str):
         async with aiohttp.ClientSession() as session:
             r = await session.post(
@@ -239,11 +239,12 @@ class TonCenterV3Client(TonCenterClient):
                     "Content-Type": "application/json",
                     "accept": "application/json",
                 },
-                json={"address": addr, "method": "seqno", "stack": []}
+                json={"address": addr, "method": "seqno", "stack": []},
             )
             try:
                 return int((await r.json())["stack"][0]["value"], 16)
             except Exception as e:
                 return 0
-            
+
+
 __all__ = ["TonCenterClient", "TonCenterV3Client"]
