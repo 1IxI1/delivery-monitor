@@ -117,32 +117,38 @@ class TonCenterClient(AbstractTonClient):
         """
         q = self.provider.raw_get_account_state(address)
         async with aiohttp.ClientSession() as session:
+            params = {
+                "address": address,
+                "limit": limit,
+                "lt": from_lt,
+                "to_lt": to_lt,
+                "archival": archival,
+            }
+            params = {k: v for k, v in params.items() if v is not None}
+            
             r = await q["func"](
                 session,
                 "getTransactions",
-                params={
-                    "address": address,
-                    "limit": limit,
-                    "lt": from_lt,
-                    "to_lt": to_lt,
-                    "archival": archival,
-                },
+                params=params
             )
             return r
         
     async def lookup_block(self, wc: int = 0, shard: int | None = None, seqno: int | None = None, lt: int | None = None, unixtime: int | None = None):
         q = self.provider.raw_get_account_state("") # just for getting base url
         async with aiohttp.ClientSession() as session:
+            params = {
+                "workchain": wc,
+                "shard": shard,
+                "seqno": seqno,
+                "lt": lt,
+                "unixtime": unixtime,
+            }
+            params = {k: v for k, v in params.items() if v is not None}
+            
             r = await q["func"](
                 session,
                 "lookupBlock",
-                params={
-                    "workchain": wc,
-                    "shard": shard or None,
-                    "seqno": seqno,
-                    "lt": lt,
-                    "unixtime": unixtime,
-                },
+                params=params
             )
             return r
         
@@ -170,9 +176,10 @@ class TonCenterV3Client(TonCenterClient):
 
     async def get_transaction_by_hash(self, msg_hash: str):
         async with aiohttp.ClientSession() as session:
+            params = {"msg_hash": msg_hash}
             r = await session.get(
                 f"{self.provider.base_url}transactionsByMessage",
-                params={"msg_hash": msg_hash},
+                params=params,
                 headers={
                     "X-API-Key": self.provider.api_key,
                     "Content-Type": "application/json",
@@ -185,6 +192,15 @@ class TonCenterV3Client(TonCenterClient):
     async def get_blocks(self, wc: int = 0, shard: int | None = None, seqno: int | None = None, limit: int = 10):
         """Only some of params yet implemented, just for this monitoring"""
         async with aiohttp.ClientSession() as session:
+            params = {
+                "workchain": wc,
+                "shard": shard,
+                "seqno": seqno,
+                "limit": limit
+            }
+            # Фильтруем None значения
+            params = {k: v for k, v in params.items() if v is not None}
+            
             r = await session.get(
                 f"{self.provider.base_url}blocks",
                 headers={
@@ -192,12 +208,7 @@ class TonCenterV3Client(TonCenterClient):
                     "Content-Type": "application/json",
                     "accept": "application/json",
                 },
-                params={
-                    "workchain": wc,
-                    "shard": shard,
-                    "seqno": seqno,
-                    "limit": limit,
-                },
+                params=params
             )
             return await r.json()
         
