@@ -111,12 +111,6 @@ class TransactionsMonitor:
     async def init_client(self):
         if isinstance(self.client, LiteBalancer):
             await self.client.start_up()
-        elif isinstance(self.client, TonCenterClient):
-            pass
-        elif isinstance(self.client, TonCenterV3Client):
-            pass
-        elif isinstance(self.client, AsyncTonapi):
-            pass
 
     async def read_wallets(self):
         wallets = []
@@ -186,9 +180,9 @@ class TransactionsMonitor:
             self.connection_second.commit()
 
     async def get_seqno(self, address: str) -> int:
-        if isinstance(self.client, TonCenterClient) or isinstance(
-            self.client, TonCenterV3Client
-        ):
+        if isinstance(self.client, TonCenterV3Client):
+            return await self.client.get_seqno(address)
+        elif isinstance(self.client, TonCenterClient):
             return await self.client.seqno(address)
         elif isinstance(self.client, LiteBalancer):
             return (await self.client.run_get_method(address, "seqno", []))[0]
@@ -199,9 +193,7 @@ class TransactionsMonitor:
             return int(res.decoded["state"]) if res.decoded else 0
 
     async def sendboc(self, boc: bytes):
-        if isinstance(self.client, TonCenterClient) or isinstance(
-            self.client, TonCenterV3Client
-        ):
+        if isinstance(self.client, TonCenterClient): # v3 included
             await self.client.send(boc)
         elif isinstance(self.client, LiteBalancer):
             await self.client.raw_send_message(boc)

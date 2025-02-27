@@ -1,5 +1,6 @@
 import asyncio
 from abc import ABC, abstractmethod
+import base64
 
 import aiohttp
 from tonsdk.boc import Cell
@@ -198,7 +199,6 @@ class TonCenterV3Client(TonCenterClient):
                 "seqno": seqno,
                 "limit": limit
             }
-            # Фильтруем None значения
             params = {k: v for k, v in params.items() if v is not None}
             
             r = await session.get(
@@ -212,12 +212,38 @@ class TonCenterV3Client(TonCenterClient):
             )
             return await r.json()
         
-    async def send(self, boc: bytes):
-        q = self.provider.raw_send_message(boc)
-
+    async def send(self, boc: bytes) -> str:
+        """Returns message hash in base64 format"""
+        serialized_boc = base64.b64encode(boc).decode()
         async with aiohttp.ClientSession() as session:
-            r = await q["func"](session, *q["args"], **q["kwargs"])
-            return r
-
-
+            r = await session.post(
+                f"{self.provider.base_url}message",
+                headers={
+                    "X-API-Key": self.provider.api_key,
+                    "Content-Type": "application/json",
+                    "accept": "application/json",
+                },
+                json={"boc": serialized_boc}
+            )
+            resjson = await r.json()
+            if "message_hash" not in resjson:
+                raise Exception(f"Failed to send message: {resjson}")
+            return resjson["message_hash"]
+        
+    async def get_seqno(self, addr: str):
+        async with aiohttp.ClientSession() as session:
+            r = await session.post(
+                f"{self.provider.base_url}runGetMethod",
+                headers={
+                    "X-API-Key": self.provider.api_key,
+                    "Content-Type": "application/json",
+                    "accept": "application/json",
+                },
+                json={"address": addr, "method": "seqno", "stack": []}
+            )
+            try:
+                return int((await r.json())["stack"][0]["value"], 16)
+            except Exception as e:
+                return 0
+            
 __all__ = ["TonCenterClient", "TonCenterV3Client"]
