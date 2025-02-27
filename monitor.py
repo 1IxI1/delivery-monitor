@@ -139,10 +139,17 @@ class TransactionsMonitor:
         self.connection.commit()
 
     def get_missing_msgs(self) -> List[MsgInfo]:
-        current_time = int(time.time())
+        now = int(time.time())
+
+        # second db may find msg later, when it's found in the first
+        if self.dbname_second: 
+            is_found_filter = "" # fetch all
+        else:
+            is_found_filter = "is_found = 0 AND"
+
         self.cursor.execute(
-            "SELECT addr, utime, msghash FROM txs WHERE is_found = 0 AND utime > ?",
-            (current_time - 1200,),  # 20 min ago or newer
+            f"SELECT addr, utime, msghash FROM txs WHERE {is_found_filter} utime > ?",
+            (now - 1200,),  # 20 min ago or newer
         )
         result = self.cursor.fetchall()
         msgs = []
@@ -153,7 +160,7 @@ class TransactionsMonitor:
             # get message hashes found in second DB in last 20 minutes
             self.cursor_second.execute(
                 "SELECT msghash FROM txs WHERE is_found = 1 AND utime > ?",
-                (current_time - 1200,)
+                (now - 1200,)
             )
             found_hashes = {row[0] for row in self.cursor_second.fetchall()}
             
@@ -210,7 +217,6 @@ class TransactionsMonitor:
         logger.info(
             f"{self.dbstr}: Found tx: {msg_info.utime}:{msg_info.addr}. Executed in {executed_in} sec. Found in {found_in} sec. Commited in {commited_in} sec."
         )
-
         self.make_found(msg_info, executed_in, found_in, commited_in)
 
     async def parse_and_add_msg(self, msg: Cell, found_at: int, blockutime: int, commited_at: int, addr: str) -> bool:
@@ -363,8 +369,9 @@ class TransactionsMonitor:
                             # get mc block time
                             commited_at = 0
                             try:
-                                blocks = await self.client.get_blocks(wc=-1, seqno=int(tx["mc_block_seqno"]), limit=1)
-                                commited_at = blocks[0]["gen_utime"]
+                                blocks = await self.client.get_blocks(wc=-1, seqno=tx["mc_block_seqno"], limit=1)
+                                block = blocks['blocks'][0]
+                                commited_at = int(block["gen_utime"])
                             except Exception as e:
                                 logger.warning(f"Failed to get mc block time for {missing.utime}:{addr}: {e}")
                             self.insert_found_msg(missing, tx["now"], found_at, commited_at)
@@ -387,7 +394,7 @@ class TransactionsMonitor:
 
                     else:
                         txs = await self.client.blockchain.get_account_transactions(
-                            addr, limit=3
+                            addr, limit=2
                         )
                         for tx in txs.transactions:
                             if tx.in_msg is not None and tx.in_msg.source is None:
@@ -396,9 +403,10 @@ class TransactionsMonitor:
                                     body = Cell.from_boc(body)[0]
                                     found_at = int(time.time())
                                     # get mc block time
+                                    await asyncio.sleep(1) # rate limit
                                     commited_at = 0
                                     shardblock = tx.block
-                                    blocks_after_tx = await self.client.blockchain.get_reduced_blocks(tx.utime, tx.utime + 10)
+                                    blocks_after_tx = await self.client.blockchain.get_reduced_blocks(tx.utime, tx.utime + 20)
                                     for block in blocks_after_tx.blocks:
                                         if block.workchain_id == -1 and shardblock in block.shards_blocks:
                                             commited_at = block.utime
