@@ -21,3 +21,4 @@ configs/*
 !configs/testnet.json
 monitors.json
 .vscode
+test.py
