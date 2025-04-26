@@ -32,7 +32,7 @@ class WalletInfo:
 @dataclass
 class MsgInfo:
     addr: str
-    utime: int
+    utime: float
     msghash: str
 
 
@@ -64,12 +64,12 @@ class TransactionsMonitor:
         query = """
             CREATE TABLE IF NOT EXISTS txs (
                 addr TEXT,
-                utime INTEGER,
+                utime REAL,
                 msghash STRING,
                 is_found BOOLEAN,
-                executed_in INTEGER,
-                found_in INTEGER,
-                commited_in INTEGER,
+                executed_in REAL,
+                found_in REAL,
+                commited_in REAL,
                 PRIMARY KEY (addr, utime)
             )
             """
@@ -133,7 +133,7 @@ class TransactionsMonitor:
         self.connection.commit()
 
     def get_missing_msgs(self) -> List[MsgInfo]:
-        now = int(time.time())
+        now = time.time()
 
         # second db may find msg later, when it's found in the first
         if self.dbname_second:
@@ -164,7 +164,7 @@ class TransactionsMonitor:
         return msgs
 
     def make_found(
-        self, msg: MsgInfo, executed_in: int, found_in: int, commited_in: int | None
+        self, msg: MsgInfo, executed_in: float, found_in: float, commited_in: Optional[float]
     ) -> None:
         if not self.dbname_second:
             self.cursor.execute(
@@ -205,18 +205,18 @@ class TransactionsMonitor:
             await asyncio.sleep(2)
 
     def insert_found_msg(
-        self, msg_info: MsgInfo, blockutime: int, found_at: int, commited_at: int
+        self, msg_info: MsgInfo, blockutime: float, found_at: float, commited_at: float
     ) -> None:
         executed_in = blockutime - msg_info.utime
         found_in = found_at - msg_info.utime
         commited_in = commited_at - msg_info.utime if commited_at != 0 else None
         logger.info(
-            f"{self.dbstr}: Found tx: {msg_info.utime}:{msg_info.addr}. Executed in {executed_in} sec. Found in {found_in} sec. Commited in {commited_in} sec."
+            f"{self.dbstr}: Found tx: {msg_info.utime:.6f}:{msg_info.addr}. Executed in {executed_in:.6f} sec. Found in {found_in:.6f} sec. Commited in {commited_in:.6f if commited_in else None} sec."
         )
         self.make_found(msg_info, executed_in, found_in, commited_in)
 
     async def parse_and_add_msg(
-        self, msg: Cell, found_at: int, blockutime: int, commited_at: int, addr: str
+        self, msg: Cell, found_at: float, blockutime: float, commited_at: float, addr: str
     ) -> bool:
         """Check msg validity and add it to found_tx_ids"""
         msg_slice = msg.begin_parse()
@@ -226,7 +226,7 @@ class TransactionsMonitor:
         msg_sent_at = valid_until - VALID_UNTIL_TIMEOUT  # get sending time
 
         for i in self.get_missing_msgs():
-            if i.utime == msg_sent_at and i.addr == addr:
+            if int(i.utime) == msg_sent_at and i.addr == addr:
                 self.insert_found_msg(i, blockutime, found_at, commited_at)
                 return True
         return False
@@ -236,14 +236,14 @@ class TransactionsMonitor:
         msg_addr: str,
         msg_body: Cell,
         missing_msg_addr: str,
-        missing_msg_utime: int,
+        missing_msg_utime: float,
     ) -> bool:
         body_slice = msg_body.begin_parse()
         body_slice.skip_bits(512)  # signature
         body_slice.skip_bits(32)  # seqno
         valid_until = body_slice.load_uint(48)
         msg_sent_at = valid_until - VALID_UNTIL_TIMEOUT  # get sending time
-        return msg_sent_at == missing_msg_utime and missing_msg_addr == msg_addr
+        return int(missing_msg_utime) == msg_sent_at and missing_msg_addr == msg_addr
 
     def extend_message_to_1kb(self, body: Builder):
         # writing some misc data
@@ -262,7 +262,7 @@ class TransactionsMonitor:
         body.store_ref(Builder().store_bits("00" * 503).end_cell())
         return body
 
-    async def send_tx_with_id(self, tx_utime: int, wdata: WalletInfo):
+    async def send_tx_with_id(self, tx_utime: float, wdata: WalletInfo):
         seqno = await self.get_seqno(wdata.addr)
 
         # compile new code
@@ -285,7 +285,7 @@ class TransactionsMonitor:
         )
 
         # make a signature of `valid_until * seqno`
-        valid_until = tx_utime + VALID_UNTIL_TIMEOUT
+        valid_until = int(tx_utime) + VALID_UNTIL_TIMEOUT
         stamp = valid_until * seqno
         stamp_bytes = stamp.to_bytes(32, "big")
         signature = sign_message(stamp_bytes, wdata.sk).signature
@@ -319,7 +319,7 @@ class TransactionsMonitor:
         self.sent_count += 1
         logger.info(f"{self.dbstr}: Sent tx with seqno {seqno}")
         logger.debug(
-            f"{self.dbstr}: Tx details - hash: {hashstr}, valid_until: {valid_until}, addr: {wdata.addr}, utime: {tx_utime}"
+            f"{self.dbstr}: Tx details - hash: {hashstr}, valid_until: {valid_until}, addr: {wdata.addr}, utime: {tx_utime:.6f}"
         )
 
     async def start_sending(self):
@@ -327,12 +327,12 @@ class TransactionsMonitor:
         all the wallets specified in `self.wallets`."""
         while self.sent_count < (self.to_send or 100000000):  # 400 years by default
             for wdata in self.wallets:
-                tx_id = int(time.time())
+                tx_id = time.time()
                 try:
                     await self.send_tx_with_id(tx_id, wdata)
                 except Exception as e:
                     logger.warning(
-                        f"Failed to send tx with id {str(tx_id)} from wallet "
+                        f"Failed to send tx with id {tx_id:.6f} from wallet "
                         + f"{wdata.addr} error: {str(e)}"
                     )
             await asyncio.sleep(SEND_INTERVAL)
@@ -357,9 +357,9 @@ class TransactionsMonitor:
                                     addr, tx.in_msg.body, missing.addr, missing.utime
                                 ):
                                     continue
-                                found_at = int(time.time())
+                                found_at = time.time()
                                 # get mc block time
-                                commited_at = 0
+                                commited_at = 0.0
                                 try:
                                     shardblock = await self.client.lookup_block(
                                         0, -1, -1, lt=tx.lt
@@ -390,16 +390,16 @@ class TransactionsMonitor:
                                                     shard.shard == our_shard
                                                     and shard.seqno == our_seqno
                                                 ):
-                                                    commited_at = mc_block[
+                                                    commited_at = float(mc_block[
                                                         1
-                                                    ].info.gen_utime
+                                                    ].info.gen_utime)
                                                     break
                                 except Exception as e:
                                     logger.warning(
-                                        f"Failed to get mc block time for {missing.utime}:{addr}: {e}"
+                                        f"Failed to get mc block time for {missing.utime:.6f}:{addr}: {e}"
                                     )
                                 self.insert_found_msg(
-                                    missing, tx.now, found_at, commited_at
+                                    missing, float(tx.now), found_at, commited_at
                                 )
 
                     elif isinstance(self.client, TonCenterV3Client):
@@ -408,21 +408,21 @@ class TransactionsMonitor:
                             tx = txs["transactions"][0]
                             body_b64 = tx["in_msg"]["message_content"]["body"]
                             body = Cell.from_boc(body_b64)[0]
-                            found_at = int(time.time())
+                            found_at = time.time()
                             # get mc block time
-                            commited_at = 0
+                            commited_at = 0.0
                             try:
                                 blocks = await self.client.get_blocks(
                                     wc=-1, seqno=tx["mc_block_seqno"], limit=1
                                 )
                                 block = blocks["blocks"][0]
-                                commited_at = int(block["gen_utime"])
+                                commited_at = float(block["gen_utime"])
                             except Exception as e:
                                 logger.warning(
-                                    f"Failed to get mc block time for {missing.utime}:{addr}: {e}"
+                                    f"Failed to get mc block time for {missing.utime:.6f}:{addr}: {e}"
                                 )
                             self.insert_found_msg(
-                                missing, tx["now"], found_at, commited_at
+                                missing, float(tx["now"]), found_at, commited_at
                             )
 
                     elif isinstance(self.client, TonCenterClient):
@@ -442,11 +442,11 @@ class TransactionsMonitor:
                                     addr, body, missing.addr, missing.utime
                                 ):
                                     continue
-                                found_at = int(time.time())
+                                found_at = time.time()
                                 # it's complicated to get mc block time
-                                commited_at = 0
+                                commited_at = 0.0
                                 self.insert_found_msg(
-                                    missing, tx["utime"], found_at, commited_at
+                                    missing, float(tx["utime"]), found_at, commited_at
                                 )
 
                     else:
@@ -462,10 +462,10 @@ class TransactionsMonitor:
                                         addr, body, missing.addr, missing.utime
                                     ):
                                         continue
-                                    found_at = int(time.time())
+                                    found_at = time.time()
                                     # get mc block time
                                     # await asyncio.sleep(1)  # rate limit
-                                    commited_at = 0
+                                    commited_at = 0.0
                                     shardblock = tx.block
                                     blocks_after_tx = (
                                         await self.client.blockchain.get_reduced_blocks(
@@ -477,14 +477,14 @@ class TransactionsMonitor:
                                             block.workchain_id == -1
                                             and shardblock in block.shards_blocks
                                         ):
-                                            commited_at = block.utime
+                                            commited_at = float(block.utime)
                                             break
                                     if commited_at == 0:
                                         logger.warning(
-                                            f"{self.dbstr}: Failed to get mc block time for {missing.utime}:{addr}"
+                                            f"{self.dbstr}: Failed to get mc block time for {missing.utime:.6f}:{addr}"
                                         )
                                     self.insert_found_msg(
-                                        missing, tx.utime, found_at, commited_at
+                                        missing, float(tx.utime), found_at, commited_at
                                     )
                         # await asyncio.sleep(2)  # for tonapi rate limit
 
@@ -501,7 +501,7 @@ class TransactionsMonitor:
             found = self.sent_count - len(missing_ids)
             rate = max(found, 0) / (self.sent_count or 1)
             logger.debug(
-                f"{self.dbstr}: Found/sent: {found}/{self.sent_count}, success rate: {rate}"
+                f"{self.dbstr}: Found/sent: {found}/{self.sent_count}, success rate: {rate:.6f}"
             )
             await asyncio.sleep(5)
 

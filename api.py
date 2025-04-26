@@ -48,7 +48,7 @@ def interval(path):
         logger.debug(f"Invalid db path: {path}")
         return {"error": "no such db"}
 
-    interval_sec = int(request.args.get("seconds", 3600))
+    interval_sec = float(request.args.get("seconds", 3600))
 
     # to close connection in case of exception
     class Connection:
@@ -61,7 +61,7 @@ def interval(path):
         connection = sqlite3.connect(f"db/{path}.db")
         cursor = connection.cursor()
 
-        now = int(time.time())
+        now = time.time()
 
         cursor.execute(
             f"""
@@ -95,21 +95,22 @@ def interval(path):
 
         result = {
             "txs": res[0],
-            "success_rate": round(res[1] or 0, 4),
-            "executed_in_avg": round(res[2] or 0, 2),
-            "executed_in_min": res[3],
-            "executed_in_max": res[4],
+            "success_rate": round(res[1] or 0, 6),
+            "executed_in_avg": round(res[2] or 0, 6),
+            "executed_in_min": round(res[3] or 0, 6) if res[3] is not None else None,
+            "executed_in_max": round(res[4] or 0, 6) if res[4] is not None else None,
             # stdev = sqrt(variance)
-            "executed_in_sdev": round(math.sqrt(res[5] or 0), 2),
-            "found_in_avg": round(res[6] or 0, 2),
-            "found_in_min": res[7],
-            "found_in_max": res[8],
+            "executed_in_sdev": round(math.sqrt(res[5] or 0), 6),
+            "found_in_avg": round(res[6] or 0, 6),
+            "found_in_min": round(res[7] or 0, 6) if res[7] is not None else None,
+            "found_in_max": round(res[8] or 0, 6) if res[8] is not None else None,
             # stdev = sqrt(variance)
-            "found_in_sdev": round(math.sqrt(res[9] or 0), 2),
-            "commited_in_avg": round(res[10] or 0, 2),
-            "commited_in_min": res[11],
-            "commited_in_max": res[12],
-            "commited_in_sdev": round(math.sqrt(res[13] or 0), 2),
+            "found_in_sdev": round(math.sqrt(res[9] or 0), 6),
+            "commited_in_avg": round(res[10] or 0, 6),
+            "commited_in_min": round(res[11] or 0, 6) if res[11] is not None else None,
+            "commited_in_max": round(res[12] or 0, 6) if res[12] is not None else None,
+            # stdev = sqrt(variance)
+            "commited_in_sdev": round(math.sqrt(res[13] or 0), 6),
         }
 
         connection.close()
@@ -146,7 +147,7 @@ def get_processed(path):
         connection = sqlite3.connect(f"db/{path}.db")
         cursor = connection.cursor()
 
-        now = int(time.time())
+        now = time.time()
 
         result = {}
 
@@ -187,21 +188,22 @@ def get_processed(path):
 
             result[interval_txt] = {
                 "txs": res[0],
-                "success_rate": round(res[1] or 0, 4),
-                "executed_in_avg": round(res[2] or 0, 2),
-                "executed_in_min": res[3],
-                "executed_in_max": res[4],
+                "success_rate": round(res[1] or 0, 6),
+                "executed_in_avg": round(res[2] or 0, 6),
+                "executed_in_min": round(res[3] or 0, 6) if res[3] is not None else None,
+                "executed_in_max": round(res[4] or 0, 6) if res[4] is not None else None,
                 # stdev = sqrt(variance)
-                "executed_in_sdev": round(math.sqrt(res[5] or 0), 2),
-                "found_in_avg": round(res[6] or 0, 2),
-                "found_in_min": res[7],
-                "found_in_max": res[8],
+                "executed_in_sdev": round(math.sqrt(res[5] or 0), 6),
+                "found_in_avg": round(res[6] or 0, 6),
+                "found_in_min": round(res[7] or 0, 6) if res[7] is not None else None,
+                "found_in_max": round(res[8] or 0, 6) if res[8] is not None else None,
                 # stdev = sqrt(variance)
-                "found_in_sdev": round(math.sqrt(res[9] or 0), 2),
-                "commited_in_avg": round(res[10] or 0, 2),
-                "commited_in_min": res[11],
-                "commited_in_max": res[12],
-                "commited_in_sdev": round(math.sqrt(res[13] or 0), 2),
+                "found_in_sdev": round(math.sqrt(res[9] or 0), 6),
+                "commited_in_avg": round(res[10] or 0, 6),
+                "commited_in_min": round(res[11] or 0, 6) if res[11] is not None else None,
+                "commited_in_max": round(res[12] or 0, 6) if res[12] is not None else None,
+                # stdev = sqrt(variance)
+                "commited_in_sdev": round(math.sqrt(res[13] or 0), 6),
             }
             last_len = res[0]
 
