@@ -130,9 +130,13 @@ def interval(path):
 
 @app.route("/stats/<path:path>")
 def get_processed(path):
-    if path not in ["liteserver", "toncenter", "tonapi"]:
-        logger.debug(f"Invalid endpoint: {path}")
-        return {"error": "endpoint must be: liteserver, toncenter, tonapi"}
+    if path.find("/") != -1:
+        logger.debug(f"Invalid db path: {path}")
+        return {"error": "invalid path: / not allowed"}
+
+    if not Path(f"db/{path}.db").is_file():
+        logger.debug(f"Invalid db path: {path}")
+        return {"error": "no such db"}
 
     addr = request.args.get("addr", "")
 
