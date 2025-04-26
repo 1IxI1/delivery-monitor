@@ -338,7 +338,7 @@ class TransactionsMonitor:
                     await self.send_tx_with_id(tx_id, wdata)
                 except Exception as e:
                     logger.warning(
-                        f"Failed to send tx with id {tx_id:.6f} from wallet "
+                        f"{self.dbstr}: Failed to send tx with id {tx_id:.6f} from wallet "
                         + f"{wdata.addr} error: {str(e)}"
                     )
             await asyncio.sleep(SEND_INTERVAL)
