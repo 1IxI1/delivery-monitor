@@ -210,8 +210,14 @@ class TransactionsMonitor:
         executed_in = blockutime - msg_info.utime
         found_in = found_at - msg_info.utime
         commited_in = commited_at - msg_info.utime if commited_at != 0 else None
+        
+        if commited_in is None:
+            commited_str = "None"
+        else:
+            commited_str = f"{commited_in:.6f}"
+            
         logger.info(
-            f"{self.dbstr}: Found tx: {msg_info.utime:.6f}:{msg_info.addr}. Executed in {executed_in:.6f} sec. Found in {found_in:.6f} sec. Commited in {commited_in:.6f if commited_in else None} sec."
+            f"{self.dbstr}: Found tx: {msg_info.utime:.6f}:{msg_info.addr}. Executed in {executed_in:.6f} sec. Found in {found_in:.6f} sec. Commited in {commited_str} sec."
         )
         self.make_found(msg_info, executed_in, found_in, commited_in)
 
