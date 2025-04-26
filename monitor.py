@@ -464,7 +464,7 @@ class TransactionsMonitor:
                                         continue
                                     found_at = int(time.time())
                                     # get mc block time
-                                    await asyncio.sleep(1)  # rate limit
+                                    # await asyncio.sleep(1)  # rate limit
                                     commited_at = 0
                                     shardblock = tx.block
                                     blocks_after_tx = (
@@ -486,13 +486,13 @@ class TransactionsMonitor:
                                     self.insert_found_msg(
                                         missing, tx.utime, found_at, commited_at
                                     )
-                        await asyncio.sleep(2)  # for tonapi rate limit
+                        # await asyncio.sleep(2)  # for tonapi rate limit
 
             except Exception as e:
                 logger.warning(
                     f"{self.dbstr}: watch_transactions failed, retrying: {str(e)}"
                 )
-            await asyncio.sleep(4)
+            await asyncio.sleep(0.2)
 
     async def printer(self):
         """Prints some stats about sent txs every 5 sec."""
