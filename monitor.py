@@ -36,8 +36,8 @@ class MsgInfo:
     msghash: str
 
 
-VALID_UNTIL_TIMEOUT = 60
-SEND_INTERVAL = 240
+VALID_UNTIL_TIMEOUT = 40
+SEND_INTERVAL = 40
 
 Client = Union[LiteBalancer, TonCenterClient, AsyncTonapi]
 
@@ -49,6 +49,7 @@ class TransactionsMonitor:
     dbname_second: Optional[str] = None
     connection_second: Optional[sqlite3.Connection] = None
     cursor_second: Optional[sqlite3.Cursor] = None
+    with_state_init: bool = False
 
     @property
     def dbstr(self):
@@ -57,7 +58,7 @@ class TransactionsMonitor:
             dbstr += "->" + self.dbname_second
         return dbstr
 
-    def init_db(self, second_db: bool = False):
+    def init_db(self, second_db: bool = False, with_state_init: bool = False):
         # if seconds db specified, we'll look (no send) for txs
         # in the first db and write to second when found
         os.makedirs("db/", exist_ok=True)
@@ -269,7 +270,15 @@ class TransactionsMonitor:
         return body
 
     async def send_tx_with_id(self, tx_utime: float, wdata: WalletInfo):
-        seqno = await self.get_seqno(wdata.addr)
+        try:
+            seqno = await self.get_seqno(wdata.addr)
+        except Exception as e:
+            if self.with_state_init: # Deploying with seqno 0
+                logger.warning(f"{self.dbstr}: Failed to get seqno for {wdata.addr}: {e}. Deploying with seqno 0.")
+                seqno = 0
+            else:
+                logger.error(f"{self.dbstr}: Failed to get seqno for {wdata.addr}: {e}")
+                return
 
         # compile new code
         relative_path = "logger-c5.fif"
@@ -308,11 +317,21 @@ class TransactionsMonitor:
             body = self.extend_message_to_1kb(body)
         body = body.end_cell()
 
+        state_init = None
+        if self.with_state_init and seqno == 0:
+            logger.warning(f"{self.dbstr}: Making state init for {wdata.addr} with seqno 0.")
+            old_code_hex = subprocess.check_output(
+                ["fift", "-s", full_path, str(seqno), wdata.pk_hex]
+            ).decode()
+            old_code = Cell.from_boc(old_code_hex)[0]
+            state_init = StateInit(code=old_code, data=begin_cell().end_cell())
+
         # make msg
         addr = Address(wdata.addr)
         message = Wallet.create_external_msg(
             dest=addr,
             body=body,
+            state_init=state_init,
         )
 
         # send msg and save hash
