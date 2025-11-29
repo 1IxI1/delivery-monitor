@@ -19,7 +19,7 @@ from pytoniq_core.boc import Address, Cell
 from pytoniq_core.crypto import keys
 from tonsdk.utils import sign_message
 
-from client import TonCenterClient, TonCenterV3Client
+from client import TonCenterClient, TonCenterV3Client, TonCenterStreamingClient
 
 
 @dataclass
@@ -39,7 +39,7 @@ class MsgInfo:
 VALID_UNTIL_TIMEOUT = 40
 SEND_INTERVAL = 40
 
-Client = Union[LiteBalancer, TonCenterClient, AsyncTonapi]
+Client = Union[LiteBalancer, TonCenterClient, AsyncTonapi, TonCenterStreamingClient]
 
 
 class TransactionsMonitor:
@@ -50,6 +50,7 @@ class TransactionsMonitor:
     connection_second: Optional[sqlite3.Connection] = None
     cursor_second: Optional[sqlite3.Cursor] = None
     with_state_init: bool = False
+    sender_client: Optional[TonCenterV3Client] = None  # for streaming mode
 
     @property
     def dbstr(self):
@@ -71,6 +72,14 @@ class TransactionsMonitor:
                 executed_in REAL,
                 found_in REAL,
                 commited_in REAL,
+                sendboc_took REAL,
+                -- streaming fields
+                pending_tx_in REAL,
+                pending_action_in REAL,
+                confirmed_tx_in REAL,
+                confirmed_action_in REAL,
+                finalized_tx_in REAL,
+                finalized_action_in REAL,
                 PRIMARY KEY (addr, utime)
             )
             """
@@ -93,11 +102,18 @@ class TransactionsMonitor:
         dbname_second: Optional[str] = None,
         to_send: Optional[int] = None,
         extended_message: bool = False,
+        sender_client: Optional[TonCenterV3Client] = None,
+        with_state_init: bool = False,
+        extra_msg_boc: Optional[str] = None,
+        target_action_type: str = "unknown",
     ):
         self.dbname = dbname
         self.dbname_second = None
         self.connection_second = None
         self.cursor_second = None
+        self.with_state_init = with_state_init
+        self.extra_msg_boc = extra_msg_boc
+        self.target_action_type = target_action_type
         self.init_db()
         if dbname_second:
             self.dbname_second = dbname_second
@@ -108,6 +124,7 @@ class TransactionsMonitor:
         self.extended_message = extended_message
         self.wallets: List[WalletInfo] = []
         self.sent_count = 0
+        self.sender_client = sender_client  # for streaming mode
 
     async def init_client(self):
         if isinstance(self.client, LiteBalancer):
@@ -125,11 +142,11 @@ class TransactionsMonitor:
                 wallets.append(WalletInfo(addr=addr, pk_hex=pk_hex, sk=private_key))
         self.wallets = wallets
 
-    def add_new_tx(self, msg: MsgInfo) -> None:
+    def add_new_tx(self, msg: MsgInfo, sendboc_took: Optional[float] = None) -> None:
         # insert in first db
         self.cursor.execute(
-            "INSERT INTO txs (addr, utime, msghash, is_found) VALUES (?, ?, ?, 0)",
-            (msg.addr, msg.utime, msg.msghash),
+            "INSERT INTO txs (addr, utime, msghash, is_found, sendboc_took) VALUES (?, ?, ?, 0, ?)",
+            (msg.addr, msg.utime, msg.msghash, sendboc_took),
         )
         self.connection.commit()
 
@@ -183,7 +200,12 @@ class TransactionsMonitor:
             self.connection_second.commit()
 
     async def get_seqno(self, address: str) -> int:
-        if isinstance(self.client, TonCenterV3Client):
+        if isinstance(self.client, TonCenterStreamingClient):
+            # streaming client uses separate sender_client for seqno
+            if self.sender_client:
+                return await self.sender_client.get_seqno(address)
+            raise RuntimeError("sender_client not set for streaming")
+        elif isinstance(self.client, TonCenterV3Client):
             return await self.client.get_seqno(address)
         elif isinstance(self.client, TonCenterClient):
             return await self.client.seqno(address)
@@ -195,9 +217,15 @@ class TransactionsMonitor:
                 raise Exception(f"Error with tonapi get method: {res.exit_code}")
             return int(res.decoded["state"]) if res.decoded else 0
 
-    async def sendboc(self, boc: bytes):
-        if isinstance(self.client, TonCenterClient):  # v3 included
-            await self.client.send(boc)
+    async def sendboc(self, boc: bytes) -> str | None | dict:
+        if isinstance(self.client, TonCenterStreamingClient):
+            # streaming client uses separate sender_client for sending
+            if self.sender_client:
+                return await self.sender_client.send(boc)
+            else:
+                raise RuntimeError("sender_client not set for streaming")
+        elif isinstance(self.client, TonCenterClient):  # v3 included
+            return await self.client.send(boc)
         elif isinstance(self.client, LiteBalancer):
             await self.client.raw_send_message(boc)
         else:
@@ -217,10 +245,255 @@ class TransactionsMonitor:
         else:
             commited_str = f"{commited_in:.6f}"
             
-        logger.info(
+        logger.success(
             f"{self.dbstr}: Found tx: {msg_info.utime:.6f}:{msg_info.addr}. Executed in {executed_in:.6f} sec. Found in {found_in:.6f} sec. Commited in {commited_str} sec."
         )
         self.make_found(msg_info, executed_in, found_in, commited_in)
+
+    def update_streaming_field(self, msg: MsgInfo, field: str, value: float) -> bool:
+        """update single streaming field for a message, only if not already set.
+        enforces order: pending only if no confirmed/finalized, confirmed only if no finalized.
+        also nullifies pending time if it arrived too close to confirmed/finalized (<0.1s).
+        returns True if field was updated, False if skipped."""
+        # build extra conditions for ordering
+        extra_cond = ""
+        pending_field = None  # field to nullify if too close
+        if field == "pending_tx_in":
+            extra_cond = " AND confirmed_tx_in IS NULL AND finalized_tx_in IS NULL"
+        elif field == "pending_action_in":
+            extra_cond = " AND confirmed_action_in IS NULL AND finalized_action_in IS NULL"
+        elif field == "confirmed_tx_in":
+            extra_cond = " AND finalized_tx_in IS NULL"
+            pending_field = "pending_tx_in"
+        elif field == "confirmed_action_in":
+            extra_cond = " AND finalized_action_in IS NULL"
+            pending_field = "pending_action_in"
+        elif field == "finalized_tx_in":
+            pending_field = "pending_tx_in"
+        elif field == "finalized_action_in":
+            pending_field = "pending_action_in"
+        
+        if not self.dbname_second:
+            self.cursor.execute(
+                f"UPDATE txs SET {field} = ? WHERE addr = ? AND utime = ? AND {field} IS NULL{extra_cond}",
+                (value, msg.addr, msg.utime),
+            )
+            updated = self.cursor.rowcount > 0
+            fixed_count = 0
+            # nullify pending if it arrived too close (<0.1s)
+            if updated and pending_field:
+                self.cursor.execute(
+                    f"UPDATE txs SET {pending_field} = NULL WHERE addr = ? AND utime = ? AND {pending_field} IS NOT NULL AND (? - {pending_field}) < 0.1",
+                    (msg.addr, msg.utime, value),
+                )
+                fixed_count = self.cursor.rowcount
+            self.connection.commit()
+            if fixed_count > 0:
+                logger.warning(f"{self.dbstr}: Nullified {fixed_count} of {pending_field} for {msg.addr}:{msg.utime}")
+            return updated
+        else:
+            if self.cursor_second is None or self.connection_second is None:
+                raise RuntimeError("secondary database is not initialized")
+            # for second db, insert then update with conditions
+            self.cursor_second.execute(
+                f"""INSERT INTO txs (addr, utime, msghash, is_found, {field}) 
+                    VALUES (?, ?, ?, 0, ?)
+                    ON CONFLICT(addr, utime) DO UPDATE SET {field} = ? 
+                    WHERE {field} IS NULL{extra_cond}""",
+                (msg.addr, msg.utime, msg.msghash, value, value),
+            )
+            updated = self.cursor_second.rowcount > 0
+            # nullify pending if it arrived too close (<0.1s)
+            if updated and pending_field:
+                self.cursor_second.execute(
+                    f"UPDATE txs SET {pending_field} = NULL WHERE addr = ? AND utime = ? AND {pending_field} IS NOT NULL AND (? - {pending_field}) < 0.1",
+                    (msg.addr, msg.utime, value),
+                )
+            self.connection_second.commit()
+            return updated
+
+    def mark_streaming_found(self, msg: MsgInfo) -> None:
+        """mark message as found in streaming mode"""
+        if not self.dbname_second:
+            self.cursor.execute(
+                "UPDATE txs SET is_found = 1 WHERE addr = ? AND utime = ?",
+                (msg.addr, msg.utime),
+            )
+            self.connection.commit()
+        else:
+            if self.cursor_second is None or self.connection_second is None:
+                raise RuntimeError("secondary database is not initialized")
+            self.cursor_second.execute(
+                "UPDATE txs SET is_found = 1 WHERE addr = ? AND utime = ?",
+                (msg.addr, msg.utime),
+            )
+            self.connection_second.commit()
+
+    def get_streaming_missing_msgs(self) -> List[MsgInfo]:
+        """get messages not yet fully tracked by streaming"""
+        now = time.time()
+        # for streaming we track until finalized_tx_in and finalized_action_in are set
+        if self.dbname_second:
+            is_found_filter = ""
+        else:
+            is_found_filter = "is_found = 0 AND"
+        
+        self.cursor.execute(
+            f"SELECT addr, utime, msghash FROM txs WHERE {is_found_filter} utime > ?",
+            (now - 1200,),
+        )
+        result = self.cursor.fetchall()
+        msgs = []
+        for addr, utime, msghash in result:
+            msgs.append(MsgInfo(addr=addr, utime=utime, msghash=msghash))
+        
+        if self.dbname_second and self.cursor_second:
+            self.cursor_second.execute(
+                "SELECT msghash FROM txs WHERE is_found = 1 AND utime > ?",
+                (now - 1200,),
+            )
+            found_hashes = {row[0] for row in self.cursor_second.fetchall()}
+            msgs = [msg for msg in msgs if msg.msghash not in found_hashes]
+        
+        return msgs
+
+    async def watch_transactions_streaming(self):
+        """watch for transactions via websocket streaming api"""
+        if not isinstance(self.client, TonCenterStreamingClient):
+            raise RuntimeError("client is not TonCenterStreamingClient")
+        
+        reconnect_delay = 1
+        max_reconnect_delay = 30
+        
+        while True:
+            try:
+                # connect to websocket
+                if not await self.client.connect():
+                    logger.warning(f"{self.dbstr}: connection failed, retrying in {reconnect_delay}s")
+                    await asyncio.sleep(reconnect_delay)
+                    reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+                    continue
+                
+                reconnect_delay = 1  # reset on successful connect
+                
+                # get addresses to subscribe
+                missing = self.get_streaming_missing_msgs()
+                if not missing:
+                    for _ in range(1000):
+                        await asyncio.sleep(0.01)
+                        missing = self.get_streaming_missing_msgs()
+                        if missing:
+                            break
+                    if not missing:
+                        logger.warning(f"{self.dbstr}: still no missing messages, sleeping and unsubscribing")
+                        await asyncio.sleep(1)
+                        await self.client.close()
+                        continue
+                
+                addresses = list(set(m.addr for m in missing))
+                
+                if not await self.client.subscribe(addresses, ["transactions", "actions"]):
+                    logger.error(f"{self.dbstr}: subscribe failed")
+                    await self.client.close()
+                    continue
+                
+                # track finalized state for each message
+                msg_tracking: dict[str, dict[str, bool]] = {}
+                for m in missing:
+                    msg_tracking[m.msghash] = {
+                        "finalized_tx": False,
+                        "finalized_action": False,
+                    }
+                
+                async def on_event(data: dict):
+                    event_type = data.get("type")
+                    finality = data.get("finality")
+                    if not event_type or not finality:
+                        return
+                                        
+                    # type is "transactions" or "actions", finality is "pending"/"confirmed"/"finalized"
+                    field = None
+                    if event_type == "transactions":
+                        if finality == "pending":
+                            field = "pending_tx_in"
+                        elif finality == "confirmed":
+                            field = "confirmed_tx_in"
+                        elif finality == "finalized":
+                            field = "finalized_tx_in"
+                    elif event_type == "actions":
+                        if finality == "pending":
+                            field = "pending_action_in"
+                        elif finality == "confirmed":
+                            field = "confirmed_action_in"
+                        elif finality == "finalized":
+                            field = "finalized_action_in"
+                    
+                    if not field:
+                        return
+                    
+                    # match by msghash in transactions or trace_external_hash_norm in actions
+                    for m in self.get_streaming_missing_msgs():
+                        matched = False
+                        
+                        if event_type == "transactions":
+                            for tx in data.get("transactions", []):
+                                tx_hash = tx.get("in_msg", {}).get("hash_norm")
+                                if tx_hash == m.msghash:
+                                    matched = True
+                                    break
+                        
+                        elif event_type == "actions":
+                            trace_hash = data.get("trace_external_hash_norm")
+                            if trace_hash == m.msghash:
+                                for action in data.get("actions", []):
+                                    action_type = action.get("type")
+                                    if action_type == self.target_action_type:
+                                        matched = True
+                                        break
+                                else:
+                                    logger.warning(f"{self.dbstr}: No action type {self.target_action_type} found in actions, but trace hash matches")
+                        
+                        if matched:
+                            time_in = time.time() - m.utime
+                            updated = self.update_streaming_field(m, field, time_in)
+                            
+                            # only log and track if actually updated (skip duplicates)
+                            if not updated:
+                                continue
+                            
+                            logger.info(
+                                f"{self.dbstr}: {event_type}/{finality} for {m.msghash[:16]}... "
+                                f"in {time_in:.3f}s"
+                            )
+                            
+                            # add to tracking if not exists (new tx sent after connect)
+                            if m.msghash not in msg_tracking:
+                                msg_tracking[m.msghash] = {
+                                    "finalized_tx": False,
+                                    "finalized_action": False,
+                                }
+                            
+                            # track finalized state
+                            if field == "finalized_tx_in":
+                                msg_tracking[m.msghash]["finalized_tx"] = True
+                            elif field == "finalized_action_in":
+                                msg_tracking[m.msghash]["finalized_action"] = True
+                            
+                            # mark as found when both finalized
+                            if msg_tracking[m.msghash]["finalized_tx"] and msg_tracking[m.msghash]["finalized_action"]:
+                                self.mark_streaming_found(m)
+                                logger.success(f"{self.dbstr}: Found finalized tx {m.msghash}")
+                
+                # listen for events
+                await self.client.listen(on_event)
+                
+            except Exception as e:
+                logger.warning(f"{self.dbstr}: streaming error: {e}, reconnecting...")
+            finally:
+                await self.client.close()
+            
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
 
     async def parse_and_add_msg(
         self, msg: Cell, found_at: float, blockutime: float, commited_at: float, addr: str
@@ -269,9 +542,13 @@ class TransactionsMonitor:
         body.store_ref(Builder().store_bits("00" * 503).end_cell())
         return body
 
-    async def send_tx_with_id(self, tx_utime: float, wdata: WalletInfo):
+    async def prepare_and_send_to_wallet(self, wdata: WalletInfo):
+        """runs get method, builds code, packs message, sends it to wallet, writes to db"""
         try:
+            t_seqno = time.time()
             seqno = await self.get_seqno(wdata.addr)
+            t_seqno = time.time() - t_seqno
+            logger.debug(f"{self.dbstr}: get_seqno took {int(t_seqno*1000)}ms")
         except Exception as e:
             if self.with_state_init: # Deploying with seqno 0
                 logger.warning(f"{self.dbstr}: Failed to get seqno for {wdata.addr}: {e}. Deploying with seqno 0.")
@@ -283,24 +560,57 @@ class TransactionsMonitor:
         # compile new code
         relative_path = "logger-c5.fif"
         full_path = os.path.join(os.path.dirname(__file__), relative_path)
+        t_compile = time.time()
         new_code_hex = subprocess.check_output(
             ["fift", "-s", full_path, str(seqno + 1), wdata.pk_hex]
         ).decode()
+        t_compile = time.time() - t_compile
+        logger.debug(f"{self.dbstr}: compile took {int(t_compile*1000)}ms")
 
-        # pack set_code action
+        # pack actions
+        t_serialize = time.time()
         new_seqno_code = Cell.from_boc(new_code_hex)[0]
+        # action_set_code#ad4de08e new_code:^Cell
         action_set_code = (
             begin_cell().store_uint(0xAD4DE08E, 32).store_ref(new_seqno_code).end_cell()
         )
-        actions = (
-            begin_cell()
-            .store_ref(begin_cell().end_cell())
-            .store_slice(action_set_code.to_slice())
-            .end_cell()
-        )
+        
+        if self.extra_msg_boc:
+            # build OutList with send_msg + set_code
+            extra_msg_cell = Cell.from_boc(self.extra_msg_boc)[0]
+            # action_send_msg#0ec3c86d mode:(## 8) out_msg:^(MessageRelaxed Any)
+            action_send_msg = (
+                begin_cell()
+                .store_uint(0x0ec3c86d, 32)
+                .store_uint(3, 8)  # mode = 3
+                .store_ref(extra_msg_cell)
+                .end_cell()
+            )
+            # OutList 1: prev=empty, action=send_msg
+            out_list_1 = (
+                begin_cell()
+                .store_ref(begin_cell().end_cell())
+                .store_slice(action_send_msg.to_slice())
+                .end_cell()
+            )
+            # OutList 2: prev=OutList1, action=set_code
+            actions = (
+                begin_cell()
+                .store_ref(out_list_1)
+                .store_slice(action_set_code.to_slice())
+                .end_cell()
+            )
+        else:
+            # OutList 1: prev=empty, action=set_code only
+            actions = (
+                begin_cell()
+                .store_ref(begin_cell().end_cell())
+                .store_slice(action_set_code.to_slice())
+                .end_cell()
+            )
 
         # make a signature of `valid_until * seqno`
-        valid_until = int(tx_utime) + VALID_UNTIL_TIMEOUT
+        valid_until = int(time.time()) + VALID_UNTIL_TIMEOUT
         stamp = valid_until * seqno
         stamp_bytes = stamp.to_bytes(32, "big")
         signature = sign_message(stamp_bytes, wdata.sk).signature
@@ -334,17 +644,36 @@ class TransactionsMonitor:
             state_init=state_init,
         )
 
-        # send msg and save hash
+        # send msg and save normalized hash
         msg_cell = message.serialize()
-        hashstr = base64.urlsafe_b64encode(msg_cell.hash).decode()
-        await self.sendboc(msg_cell.to_boc())
+        t_serialize = time.time() - t_serialize
+        logger.debug(f"{self.dbstr}: serializing took {int(t_serialize*1000)}ms")
+        
+        t_sendboc = time.time()
+        probably_hash = await self.sendboc(msg_cell.to_boc())
+        sendboc_took = time.time() - t_sendboc
+        logger.debug(f"{self.dbstr}: sendboc took {int(sendboc_took*1000)}ms")
+        if isinstance(probably_hash, str):
+            logger.critical(f"returned hash: {probably_hash}, local hash: {base64.urlsafe_b64encode(msg_cell.hash).decode()}")
+            norm_hash_str = probably_hash
+        else:
+            # normalize like here https://github.com/tonkeeper/tongo/pull/313/files
+            logger.critical(f"before normalization hash: {base64.urlsafe_b64encode(msg_cell.hash).decode()}")
+            msg_cell = (begin_cell()
+                        .store_cell(message.info.serialize())
+                        .store_bool(False) # no state_init
+                        .store_bool(True) # body in ref
+                        .store_ref(message.body)
+                        .end_cell())
+            logger.critical(f"after normalization hash: {base64.urlsafe_b64encode(msg_cell.hash).decode()}")
+            norm_hash_str = base64.urlsafe_b64encode(msg_cell.hash).decode()
 
         # add to db and log
-        self.add_new_tx(MsgInfo(addr=wdata.addr, utime=tx_utime, msghash=hashstr))
+        self.add_new_tx(MsgInfo(addr=wdata.addr, utime=t_sendboc, msghash=norm_hash_str), sendboc_took=sendboc_took)
         self.sent_count += 1
         logger.info(f"{self.dbstr}: Sent tx with seqno {seqno}")
         logger.debug(
-            f"{self.dbstr}: Tx details - hash: {hashstr}, valid_until: {valid_until}, addr: {wdata.addr}, utime: {tx_utime:.6f}"
+            f"{self.dbstr}: Tx details - hash: {norm_hash_str}, valid_until: {valid_until}, addr: {wdata.addr}, utime: {t_sendboc:.6f}"
         )
 
     async def start_sending(self):
@@ -352,12 +681,11 @@ class TransactionsMonitor:
         all the wallets specified in `self.wallets`."""
         while self.sent_count < (self.to_send or 100000000):  # 400 years by default
             for wdata in self.wallets:
-                tx_id = time.time()
                 try:
-                    await self.send_tx_with_id(tx_id, wdata)
+                    await self.prepare_and_send_to_wallet(wdata)
                 except Exception as e:
                     logger.warning(
-                        f"{self.dbstr}: Failed to send tx with id {tx_id:.6f} from wallet "
+                        f"{self.dbstr}: Failed to send tx to wallet "
                         + f"{wdata.addr} error: {str(e)}"
                     )
             await asyncio.sleep(SEND_INTERVAL)
@@ -365,6 +693,10 @@ class TransactionsMonitor:
     async def watch_transactions(self):
         """Watches for sent tx to be shown up on wallets
         and adds them to found_tx_ids."""
+        # streaming client has its own watch method
+        if isinstance(self.client, TonCenterStreamingClient):
+            return
+        
         while True:
             try:
                 # go for possible multiple addresses
@@ -538,7 +870,13 @@ class TransactionsMonitor:
         )
         await self.init_client()
         await self.read_wallets()
-        asyncio.create_task(self.watch_transactions())
+        
+        # choose watch method based on client type
+        if isinstance(self.client, TonCenterStreamingClient):
+            asyncio.create_task(self.watch_transactions_streaming())
+        else:
+            asyncio.create_task(self.watch_transactions())
+        
         asyncio.create_task(self.printer())
         if not self.dbname_second:  # read sended txs from first
             await self.start_sending()

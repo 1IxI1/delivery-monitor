@@ -80,7 +80,14 @@ def interval(path):
                    AVG(commited_in), MIN(commited_in),
                    MAX(commited_in),
                    -- variance of commited_in
-                   AVG(commited_in*commited_in) - AVG(commited_in)*AVG(commited_in)
+                   AVG(commited_in*commited_in) - AVG(commited_in)*AVG(commited_in),
+
+                   AVG(sendboc_took),
+
+                   -- streaming fields
+                   AVG(pending_tx_in), AVG(pending_action_in),
+                   AVG(confirmed_tx_in), AVG(confirmed_action_in),
+                   AVG(finalized_tx_in), AVG(finalized_action_in)
 
             FROM txs WHERE utime >= ?
                 AND utime <= ?
@@ -111,6 +118,14 @@ def interval(path):
             "commited_in_max": round(res[12] or 0, 6) if res[12] is not None else None,
             # stdev = sqrt(variance)
             "commited_in_sdev": round(math.sqrt(res[13] or 0), 6),
+            "sendboc_took_avg": round(res[14] or 0, 6) if res[14] is not None else None,
+            # streaming metrics
+            "pending_tx_in_avg": round(res[15] or 0, 6) if res[15] is not None else None,
+            "pending_action_in_avg": round(res[16] or 0, 6) if res[16] is not None else None,
+            "confirmed_tx_in_avg": round(res[17] or 0, 6) if res[17] is not None else None,
+            "confirmed_action_in_avg": round(res[18] or 0, 6) if res[18] is not None else None,
+            "finalized_tx_in_avg": round(res[19] or 0, 6) if res[19] is not None else None,
+            "finalized_action_in_avg": round(res[20] or 0, 6) if res[20] is not None else None,
         }
 
         connection.close()
@@ -178,7 +193,14 @@ def get_processed(path):
                        AVG(commited_in), MIN(commited_in),
                        MAX(commited_in),
                        -- variance of commited_in
-                       AVG(commited_in*commited_in) - AVG(commited_in)*AVG(commited_in)
+                       AVG(commited_in*commited_in) - AVG(commited_in)*AVG(commited_in),
+
+                       AVG(sendboc_took),
+
+                       -- streaming fields
+                       AVG(pending_tx_in), AVG(pending_action_in),
+                       AVG(confirmed_tx_in), AVG(confirmed_action_in),
+                       AVG(finalized_tx_in), AVG(finalized_action_in)
 
                 FROM txs WHERE utime >= ?
                 {addr_appendix}
@@ -208,6 +230,14 @@ def get_processed(path):
                 "commited_in_max": round(res[12] or 0, 6) if res[12] is not None else None,
                 # stdev = sqrt(variance)
                 "commited_in_sdev": round(math.sqrt(res[13] or 0), 6),
+                "sendboc_took_avg": round(res[14] or 0, 6) if res[14] is not None else None,
+                # streaming metrics
+                "pending_tx_in_avg": round(res[15] or 0, 6) if res[15] is not None else None,
+                "pending_action_in_avg": round(res[16] or 0, 6) if res[16] is not None else None,
+                "confirmed_tx_in_avg": round(res[17] or 0, 6) if res[17] is not None else None,
+                "confirmed_action_in_avg": round(res[18] or 0, 6) if res[18] is not None else None,
+                "finalized_tx_in_avg": round(res[19] or 0, 6) if res[19] is not None else None,
+                "finalized_action_in_avg": round(res[20] or 0, 6) if res[20] is not None else None,
             }
             last_len = res[0]
 

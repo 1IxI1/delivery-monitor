@@ -5,7 +5,7 @@ from loguru import logger
 from pytonapi import AsyncTonapi
 from pytoniq import LiteBalancer, LiteClient
 
-from client import TonCenterClient, TonCenterV3Client
+from client import TonCenterClient, TonCenterV3Client, TonCenterStreamingClient
 from monitor import TransactionsMonitor
 
 filename = "monitors.json"
@@ -30,6 +30,14 @@ async def start_monitor(monitor_params: dict):
         else:
             client = TonCenterClient(api_url, api_key)
 
+    elif provider == "toncenter_streaming_ws":
+        api_key = monitor_params["toncenter_api_key"]
+        api_url = monitor_params.get("toncenter_api_url", "https://toncenter.com/api/v3/")
+        is_testnet = monitor_params.get("testnet", False)
+        client = TonCenterStreamingClient(api_key, testnet=is_testnet)
+        # sender_client for seqno and sending txs
+        sender_client = TonCenterV3Client(api_url, api_key)
+
     else:  # provider == "tonapi":
         api_key = monitor_params["tonapi_key"]
         is_testnet = monitor_params.get("testnet", False)
@@ -47,8 +55,22 @@ async def start_monitor(monitor_params: dict):
     if "to_send" in monitor_params:
         to_send = int(monitor_params["to_send"])
 
+    # sender_client only for streaming mode
+    monitor_sender_client = None
+    if provider == "toncenter_streaming_ws":
+        monitor_sender_client = sender_client
+
+    # with_state_init for deploying contracts on first tx
+    with_state_init = monitor_params.get("with_state_init", False)
+    
+    # extra_msg_boc for sending additional message in action list
+    extra_msg_boc = monitor_params.get("extra_msg_boc", None)
+    target_action_type = monitor_params.get("target_action_type", "unknown")
+
     monitor = TransactionsMonitor(
-        client, wallets_path, dbname, dbname_second=dbname_second, to_send=to_send
+        client, wallets_path, dbname, dbname_second=dbname_second, to_send=to_send,
+        sender_client=monitor_sender_client, with_state_init=with_state_init,
+        extra_msg_boc=extra_msg_boc, target_action_type=target_action_type
     )
     await monitor.start_worker()
 

@@ -7,7 +7,8 @@
             "wallets": "mywallets/w-c5-1.txt",
             "config": "configs/testnet.json",
             "dbname": "ls",
-            "to_send": 10
+            "to_send": 10,
+            "with_state_init": false
         },
         {
             "enabled": true,
@@ -31,6 +32,17 @@
             "wallets": "mywallets/w-c5-3.txt",
             "testnet": true,
             "tonapi_key": "..."
+        },
+        {
+            "enabled": false,
+            "provider": "toncenter_streaming_ws",
+            "wallets": "mywallets/w-c5-4.txt",
+            "toncenter_api_url": "https://toncenter.com/api/v3/",
+            "toncenter_api_key": "...",
+            "dbname": "tc-streaming-ws",
+            "to_send": 10,
+            "extra_msg_boc": "b5ee9c72...",
+            "target_action_type": "ton_transfer"
         }
     ]
 }

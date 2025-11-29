@@ -22,3 +22,6 @@ configs/*
 monitors.json
 .vscode
 test.py
+dev/
+.DS_Store
+monitors-mainnet.json

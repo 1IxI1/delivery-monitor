@@ -1,8 +1,12 @@
 import asyncio
 import base64
+import json
 from abc import ABC, abstractmethod
+from typing import Callable, Optional
 
 import aiohttp
+import websockets
+from loguru import logger
 from tonsdk.boc import Cell
 from tonsdk.provider import ToncenterClient, address_state, prepare_address
 from tonsdk.utils import TonCurrencyEnum, from_nano
@@ -228,7 +232,7 @@ class TonCenterV3Client(TonCenterClient):
             resjson = await r.json()
             if "message_hash" not in resjson:
                 raise Exception(f"Failed to send message: {resjson}")
-            return resjson["message_hash"]
+            return resjson["message_hash_norm"]
 
     async def get_seqno(self, addr: str):
         async with aiohttp.ClientSession() as session:
@@ -247,4 +251,153 @@ class TonCenterV3Client(TonCenterClient):
                 return 0
 
 
-__all__ = ["TonCenterClient", "TonCenterV3Client"]
+class TonCenterStreamingClient:
+    """websocket streaming client for toncenter api v2"""
+    
+    def __init__(self, api_key: str, testnet: bool = False):
+        self.api_key = api_key
+        self.testnet = testnet
+        base = "testnet.toncenter.com" if testnet else "toncenter.com"
+        self.ws_url = f"wss://{base}/api/streaming/v2/ws"
+        self.websocket: Optional[websockets.WebSocketClientProtocol] = None
+        self._ping_task: Optional[asyncio.Task] = None
+        self._stop_ping = False
+        self._subscribed_addresses: set[str] = set()
+    
+    async def connect(self) -> bool:
+        """connect to websocket with api key"""
+        try:
+            ws_url_with_key = f"{self.ws_url}?api_key={self.api_key}"
+            self.websocket = await websockets.connect(ws_url_with_key)
+            self._stop_ping = False
+            self._ping_task = asyncio.create_task(self._ping_loop())
+            logger.debug(f"streaming: connected to {self.ws_url}")
+            return True
+        except Exception as e:
+            logger.error(f"streaming: connection failed: {e}")
+            return False
+    
+    async def _ping_loop(self):
+        """send ping every 15 seconds to keep connection alive"""
+        ping_id = 0
+        while not self._stop_ping:
+            try:
+                await asyncio.sleep(15)
+                if self.websocket and not self._stop_ping:
+                    ping_msg = {"operation": "ping", "id": f"ping-{ping_id}"}
+                    await self.websocket.send(json.dumps(ping_msg))
+                    ping_id += 1
+            except Exception as e:
+                if not self._stop_ping:
+                    logger.warning(f"streaming: ping failed: {e}")
+                break
+    
+    async def close(self):
+        """close websocket connection"""
+        self._stop_ping = True
+        if self._ping_task:
+            self._ping_task.cancel()
+            try:
+                await self._ping_task
+            except asyncio.CancelledError:
+                pass
+        if self.websocket:
+            await self.websocket.close()
+            self.websocket = None
+        self._subscribed_addresses.clear()
+        logger.debug(f"streaming: connection closed")
+    
+    async def subscribe(self, addresses: list[str], types: list[str]) -> bool:
+        """subscribe to addresses for given event types"""
+        if not self.websocket:
+            return False
+        try:
+            subscribe_msg = {
+                "id": "sub-1",
+                "operation": "subscribe",
+                "addresses": addresses,
+                "types": types,
+                "min_finality": "emulated", # soon be pending
+                # "supported_action_types": ["v1"],
+                "include_address_book": True,
+                "include_metadata": False
+            }
+            await self.websocket.send(json.dumps(subscribe_msg))
+            self._subscribed_addresses.update(addresses)
+            logger.debug(f"streaming: subscribed to {len(addresses)} addresses")
+            return True
+        except Exception as e:
+            logger.error(f"streaming: subscribe failed: {e}")
+            return False
+    
+    async def unsubscribe(self, addresses: list[str]) -> bool:
+        """unsubscribe from addresses"""
+        if not self.websocket:
+            return False
+        try:
+            unsubscribe_msg = {
+                "operation": "unsubscribe",
+                "addresses": addresses,
+                "id": "unsub-1"
+            }
+            await self.websocket.send(json.dumps(unsubscribe_msg))
+            self._subscribed_addresses -= set(addresses)
+            logger.debug(f"streaming: unsubscribed from {len(addresses)} addresses")
+            return True
+        except Exception as e:
+            logger.error(f"streaming: unsubscribe failed: {e}")
+            return False
+    
+    async def listen(self, on_event: Callable, timeout: float = 300) -> bool:
+        """
+        listen for events and call callback for each one.
+        on_event can be sync or async function.
+        returns False if connection closed/error, True if timeout reached.
+        """
+        if not self.websocket:
+            return False
+        
+        try:
+            async for message in self.websocket:
+                try:
+                    data = json.loads(message)
+                    
+                    # skip status messages
+                    if "status" in data:
+                        status = data["status"]
+                        if status == "subscribed":
+                            logger.debug(f"streaming: subscribed")
+                        elif status == "pong":
+                            pass  # silent pong
+                        elif status == "unsubscribed":
+                            logger.debug(f"streaming: unsubscribed")
+                        continue
+                    
+                    # handle errors
+                    if "error" in data:
+                        logger.error(f"streaming: api error: {data['error']}")
+                        continue
+                    
+                    # call event handler (supports both sync and async)
+                    result = on_event(data)
+                    if asyncio.iscoroutine(result):
+                        await result
+                    
+                except json.JSONDecodeError as e:
+                    logger.warning(f"streaming: json decode error: {e}")
+                except Exception as e:
+                    logger.error(f"streaming: event handler error: {e}")
+        
+        except websockets.exceptions.ConnectionClosed:
+            logger.warning(f"streaming: connection closed")
+            return False
+        except asyncio.TimeoutError:
+            return True
+        except Exception as e:
+            logger.error(f"streaming: listen error: {e}")
+            return False
+        
+        return False
+
+
+__all__ = ["TonCenterClient", "TonCenterV3Client", "TonCenterStreamingClient"]
