@@ -3,7 +3,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from flask import Flask, request
+from flask import Flask, request, send_file
 from flask_cors import CORS
 from loguru import logger
 from waitress import serve
@@ -19,6 +19,22 @@ def index():
         "hint": "Use /interval/liteserver?seconds=3600 or /stats/liteserver,",
         "n also": "replace 'liteserver' with 'toncenter' or 'tonapi'.",
     }
+
+
+@app.route("/db/<dbname>")
+def download_db(dbname):
+    """Download the raw .db file. Handle with care!"""
+    if "/" in dbname or ".." in dbname:
+        logger.debug(f"Nice try: {dbname}")
+        return {"error": "invalid path"}
+
+    db_path = Path(f"db/{dbname}.db")
+    if not db_path.is_file():
+        logger.debug(f"No such db: {dbname}")
+        return {"error": "no such db"}
+
+    logger.info(f"Serving db file: {dbname}")
+    return send_file(db_path, as_attachment=True)
 
 
 time_intervals = [
