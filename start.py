@@ -10,6 +10,9 @@ from monitor import TransactionsMonitor
 
 filename = "monitors.json"
 
+# global db config, set from top-level of monitors.json
+_db_config: dict = {}
+
 
 async def start_monitor(monitor_params: dict):
     """Parse config and start monitoring with given parameters."""
@@ -68,7 +71,8 @@ async def start_monitor(monitor_params: dict):
     target_action_type = monitor_params.get("target_action_type", "unknown")
 
     monitor = TransactionsMonitor(
-        client, wallets_path, dbname, dbname_second=dbname_second, to_send=to_send,
+        client, wallets_path, dbname, db_config=_db_config,
+        dbname_second=dbname_second, to_send=to_send,
         sender_client=monitor_sender_client, with_state_init=with_state_init,
         extra_msg_boc=extra_msg_boc, target_action_type=target_action_type
     )
@@ -76,8 +80,21 @@ async def start_monitor(monitor_params: dict):
 
 
 async def start_all():
+    global _db_config
+    
     with open(filename, "r") as f:
         data = json.load(f)
+    
+    # load db config from top-level (shared by all monitors)
+    _db_config = {
+        "db_backend": data.get("db_backend", "sqlite"),
+        "clickhouse_host": data.get("clickhouse_host", "localhost"),
+        "clickhouse_port": data.get("clickhouse_port", 9000),
+        "clickhouse_user": data.get("clickhouse_user", "default"),
+        "clickhouse_password": data.get("clickhouse_password", ""),
+        "clickhouse_database": data.get("clickhouse_database", "default"),
+    }
+    
     # if server run - log to file.
     # otherwise it'll write to console
     if not data.get("cli", False):

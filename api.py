@@ -1,15 +1,95 @@
+import json
 import math
-import sqlite3
+import os
 import time
 from pathlib import Path
+from typing import Optional
 
 from flask import Flask, request, send_file
 from flask_cors import CORS
 from loguru import logger
 from waitress import serve
 
+from db_backend import DatabaseBackend, SQLiteBackend, ClickHouseBackend, create_backend
+
 app = Flask(__name__)
 CORS(app)
+
+# global db config, loaded at startup
+_db_config: dict = {}
+
+
+def load_db_config():
+    """load db config from monitors.json"""
+    global _db_config
+    config_path = os.environ.get("MONITORS_CONFIG", "monitors.json")
+    try:
+        with open(config_path, "r") as f:
+            data = json.load(f)
+        _db_config = {
+            "db_backend": data.get("db_backend", "sqlite"),
+            "clickhouse_host": data.get("clickhouse_host", "localhost"),
+            "clickhouse_port": data.get("clickhouse_port", 9000),
+            "clickhouse_user": data.get("clickhouse_user", "default"),
+            "clickhouse_password": data.get("clickhouse_password", ""),
+            "clickhouse_database": data.get("clickhouse_database", "default"),
+        }
+        logger.info(f"Loaded db config: backend={_db_config['db_backend']}")
+    except Exception as e:
+        logger.warning(f"Failed to load monitors.json, using sqlite: {e}")
+        _db_config = {"db_backend": "sqlite"}
+
+
+def get_backend(dbname: str) -> Optional[DatabaseBackend]:
+    """create backend for given dbname, returns None if db doesn't exist"""
+    backend_type = _db_config.get("db_backend", "sqlite")
+    
+    if backend_type == "sqlite":
+        # check if file exists
+        if not Path(f"db/{dbname}.db").is_file():
+            return None
+        return SQLiteBackend(dbname)
+    else:
+        # for clickhouse, just try to connect
+        return ClickHouseBackend(
+            dbname=dbname,
+            host=_db_config.get("clickhouse_host", "localhost"),
+            port=_db_config.get("clickhouse_port", 9000),
+            user=_db_config.get("clickhouse_user", "default"),
+            password=_db_config.get("clickhouse_password", ""),
+            database=_db_config.get("clickhouse_database", "default"),
+        )
+
+
+def format_stats_result(res: tuple) -> dict:
+    """format raw stats tuple into dict"""
+    return {
+        "txs": res[0],
+        "success_rate": round(res[1] or 0, 6),
+        "executed_in_avg": round(res[2] or 0, 6),
+        "executed_in_min": round(res[3] or 0, 6) if res[3] is not None else None,
+        "executed_in_max": round(res[4] or 0, 6) if res[4] is not None else None,
+        # stdev = sqrt(variance)
+        "executed_in_sdev": round(math.sqrt(res[5] or 0), 6),
+        "found_in_avg": round(res[6] or 0, 6),
+        "found_in_min": round(res[7] or 0, 6) if res[7] is not None else None,
+        "found_in_max": round(res[8] or 0, 6) if res[8] is not None else None,
+        # stdev = sqrt(variance)
+        "found_in_sdev": round(math.sqrt(res[9] or 0), 6),
+        "commited_in_avg": round(res[10] or 0, 6),
+        "commited_in_min": round(res[11] or 0, 6) if res[11] is not None else None,
+        "commited_in_max": round(res[12] or 0, 6) if res[12] is not None else None,
+        # stdev = sqrt(variance)
+        "commited_in_sdev": round(math.sqrt(res[13] or 0), 6),
+        "sendboc_took_avg": round(res[14] or 0, 6) if res[14] is not None else None,
+        # streaming metrics
+        "pending_tx_in_avg": round(res[15] or 0, 6) if res[15] is not None else None,
+        "pending_action_in_avg": round(res[16] or 0, 6) if res[16] is not None else None,
+        "confirmed_tx_in_avg": round(res[17] or 0, 6) if res[17] is not None else None,
+        "confirmed_action_in_avg": round(res[18] or 0, 6) if res[18] is not None else None,
+        "finalized_tx_in_avg": round(res[19] or 0, 6) if res[19] is not None else None,
+        "finalized_action_in_avg": round(res[20] or 0, 6) if res[20] is not None else None,
+    }
 
 
 @app.route("/")
@@ -18,15 +98,19 @@ def index():
         "error": "Invalid endpoint, my dear!",
         "hint": "Use /interval/liteserver?seconds=3600 or /stats/liteserver,",
         "n also": "replace 'liteserver' with 'toncenter' or 'tonapi'.",
+        "db_backend": _db_config.get("db_backend", "sqlite"),
     }
 
 
 @app.route("/db/<dbname>")
 def download_db(dbname):
-    """Download the raw .db file. Handle with care!"""
+    """Download the raw .db file. Handle with care! (sqlite only)"""
     if "/" in dbname or ".." in dbname:
         logger.debug(f"Nice try: {dbname}")
         return {"error": "invalid path"}
+
+    if _db_config.get("db_backend") != "sqlite":
+        return {"error": "db download only available for sqlite backend"}
 
     db_path = Path(f"db/{dbname}.db")
     if not db_path.is_file():
@@ -60,100 +144,30 @@ def interval(path):
         logger.debug(f"Invalid db path: {path}")
         return {"error": "invalid path: / not allowed"}
 
-    if not Path(f"db/{path}.db").is_file():
+    backend = get_backend(path)
+    if backend is None:
         logger.debug(f"Invalid db path: {path}")
         return {"error": "no such db"}
 
     interval_sec = float(request.args.get("seconds", 3600))
 
-    # to close connection in case of exception
-    class Connection:
-        def close(self):
-            pass
-
-    connection = Connection()
-
     try:
-        connection = sqlite3.connect(f"db/{path}.db")
-        cursor = connection.cursor()
+        backend.init_db()  # ensure connected
+        res = backend.get_interval_stats(interval_sec)
 
-        now = time.time()
-
-        cursor.execute(
-            f"""
-            SELECT COUNT(*), AVG(is_found),
-
-                   AVG(executed_in), MIN(executed_in),
-                   MAX(executed_in),
-                   -- variance of executed_in
-                   AVG(executed_in*executed_in) - AVG(executed_in)*AVG(executed_in),
-
-                   AVG(found_in), MIN(found_in),
-                   MAX(found_in),
-                   -- variance of found_in
-                   AVG(found_in*found_in) - AVG(found_in)*AVG(found_in),
-
-                   AVG(commited_in), MIN(commited_in),
-                   MAX(commited_in),
-                   -- variance of commited_in
-                   AVG(commited_in*commited_in) - AVG(commited_in)*AVG(commited_in),
-
-                   AVG(sendboc_took),
-
-                   -- streaming fields
-                   AVG(pending_tx_in), AVG(pending_action_in),
-                   AVG(confirmed_tx_in), AVG(confirmed_action_in),
-                   AVG(finalized_tx_in), AVG(finalized_action_in)
-
-            FROM txs WHERE utime >= ?
-                AND utime <= ?
-            ORDER BY utime DESC LIMIT 1""",
-            (now - 60 - interval_sec, now - 60),
-        )
-
-        res = cursor.fetchone()
-
-        if res[0] == 0:
+        if res is None or res[0] == 0:
+            backend.close()
             return {"error": "no txs in this period"}
 
-        result = {
-            "txs": res[0],
-            "success_rate": round(res[1] or 0, 6),
-            "executed_in_avg": round(res[2] or 0, 6),
-            "executed_in_min": round(res[3] or 0, 6) if res[3] is not None else None,
-            "executed_in_max": round(res[4] or 0, 6) if res[4] is not None else None,
-            # stdev = sqrt(variance)
-            "executed_in_sdev": round(math.sqrt(res[5] or 0), 6),
-            "found_in_avg": round(res[6] or 0, 6),
-            "found_in_min": round(res[7] or 0, 6) if res[7] is not None else None,
-            "found_in_max": round(res[8] or 0, 6) if res[8] is not None else None,
-            # stdev = sqrt(variance)
-            "found_in_sdev": round(math.sqrt(res[9] or 0), 6),
-            "commited_in_avg": round(res[10] or 0, 6),
-            "commited_in_min": round(res[11] or 0, 6) if res[11] is not None else None,
-            "commited_in_max": round(res[12] or 0, 6) if res[12] is not None else None,
-            # stdev = sqrt(variance)
-            "commited_in_sdev": round(math.sqrt(res[13] or 0), 6),
-            "sendboc_took_avg": round(res[14] or 0, 6) if res[14] is not None else None,
-            # streaming metrics
-            "pending_tx_in_avg": round(res[15] or 0, 6) if res[15] is not None else None,
-            "pending_action_in_avg": round(res[16] or 0, 6) if res[16] is not None else None,
-            "confirmed_tx_in_avg": round(res[17] or 0, 6) if res[17] is not None else None,
-            "confirmed_action_in_avg": round(res[18] or 0, 6) if res[18] is not None else None,
-            "finalized_tx_in_avg": round(res[19] or 0, 6) if res[19] is not None else None,
-            "finalized_action_in_avg": round(res[20] or 0, 6) if res[20] is not None else None,
-        }
-
-        connection.close()
-        logger.debug(f"Completed request on /{path}")
+        result = format_stats_result(res)
+        backend.close()
+        logger.debug(f"Completed request on /interval/{path}")
         return result
 
     except Exception as e:
         try:
-            connection.close()
-            logger.info("Forcefully, but successfully closed the connection")
+            backend.close()
         except:
-            logger.warning("Failed to close connection")
             pass
         logger.error(str(e))
         return {"error": str(e)}
@@ -165,108 +179,35 @@ def get_processed(path):
         logger.debug(f"Invalid db path: {path}")
         return {"error": "invalid path: / not allowed"}
 
-    if not Path(f"db/{path}.db").is_file():
+    backend = get_backend(path)
+    if backend is None:
         logger.debug(f"Invalid db path: {path}")
         return {"error": "no such db"}
 
-    addr = request.args.get("addr", "")
-
-    # to close connection in case of exception
-    class Connection:
-        def close(self):
-            pass
-
-    connection = Connection()
+    addr = request.args.get("addr", "") or None
 
     try:
-        connection = sqlite3.connect(f"db/{path}.db")
-        cursor = connection.cursor()
-
-        now = time.time()
-
+        backend.init_db()  # ensure connected
         result = {}
-
         last_len = 0
+
         for interval_txt, interval_sec in time_intervals:
-            addr_appendix = ""
-            if addr:
-                addr_appendix = f"AND addr = '{addr}'"
+            res = backend.get_stats_for_interval(interval_sec, addr=addr)
 
-            cursor.execute(
-                f"""
-                SELECT COUNT(*), AVG(is_found),
-
-                       AVG(executed_in), MIN(executed_in),
-                       MAX(executed_in),
-                       -- variance of executed_in
-                       AVG(executed_in*executed_in) - AVG(executed_in)*AVG(executed_in),
-
-                       AVG(found_in), MIN(found_in),
-                       MAX(found_in),
-                       -- variance of found_in
-                       AVG(found_in*found_in) - AVG(found_in)*AVG(found_in),
-
-                       AVG(commited_in), MIN(commited_in),
-                       MAX(commited_in),
-                       -- variance of commited_in
-                       AVG(commited_in*commited_in) - AVG(commited_in)*AVG(commited_in),
-
-                       AVG(sendboc_took),
-
-                       -- streaming fields
-                       AVG(pending_tx_in), AVG(pending_action_in),
-                       AVG(confirmed_tx_in), AVG(confirmed_action_in),
-                       AVG(finalized_tx_in), AVG(finalized_action_in)
-
-                FROM txs WHERE utime >= ?
-                {addr_appendix}
-                ORDER BY utime DESC LIMIT 1""",
-                (now - interval_sec,),
-            )
-
-            res = cursor.fetchone()
-            if res[0] == last_len:
+            if res is None or res[0] == last_len:
                 continue
 
-            result[interval_txt] = {
-                "txs": res[0],
-                "success_rate": round(res[1] or 0, 6),
-                "executed_in_avg": round(res[2] or 0, 6),
-                "executed_in_min": round(res[3] or 0, 6) if res[3] is not None else None,
-                "executed_in_max": round(res[4] or 0, 6) if res[4] is not None else None,
-                # stdev = sqrt(variance)
-                "executed_in_sdev": round(math.sqrt(res[5] or 0), 6),
-                "found_in_avg": round(res[6] or 0, 6),
-                "found_in_min": round(res[7] or 0, 6) if res[7] is not None else None,
-                "found_in_max": round(res[8] or 0, 6) if res[8] is not None else None,
-                # stdev = sqrt(variance)
-                "found_in_sdev": round(math.sqrt(res[9] or 0), 6),
-                "commited_in_avg": round(res[10] or 0, 6),
-                "commited_in_min": round(res[11] or 0, 6) if res[11] is not None else None,
-                "commited_in_max": round(res[12] or 0, 6) if res[12] is not None else None,
-                # stdev = sqrt(variance)
-                "commited_in_sdev": round(math.sqrt(res[13] or 0), 6),
-                "sendboc_took_avg": round(res[14] or 0, 6) if res[14] is not None else None,
-                # streaming metrics
-                "pending_tx_in_avg": round(res[15] or 0, 6) if res[15] is not None else None,
-                "pending_action_in_avg": round(res[16] or 0, 6) if res[16] is not None else None,
-                "confirmed_tx_in_avg": round(res[17] or 0, 6) if res[17] is not None else None,
-                "confirmed_action_in_avg": round(res[18] or 0, 6) if res[18] is not None else None,
-                "finalized_tx_in_avg": round(res[19] or 0, 6) if res[19] is not None else None,
-                "finalized_action_in_avg": round(res[20] or 0, 6) if res[20] is not None else None,
-            }
+            result[interval_txt] = format_stats_result(res)
             last_len = res[0]
 
-        connection.close()
-        logger.debug(f"Completed request on /{path}")
+        backend.close()
+        logger.debug(f"Completed request on /stats/{path}")
         return result
 
     except Exception as e:
         try:
-            connection.close()
-            logger.info("Forcefully, but successfully closed the connection")
+            backend.close()
         except:
-            logger.warning("Failed to close connection")
             pass
         logger.error(str(e))
         return {"error": str(e)}
@@ -275,5 +216,6 @@ def get_processed(path):
 if __name__ == "__main__":
     logger.remove()
     logger.add("api.log", level="DEBUG", rotation="500 MB", compression="zip")
+    load_db_config()
     logger.info("Starting tiny API")
     serve(app, host="0.0.0.0", port=8000)

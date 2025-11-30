@@ -1,5 +1,11 @@
 {
     "cli": true,
+    "db_backend": "sqlite",
+    "clickhouse_host": "localhost",
+    "clickhouse_port": 9000,
+    "clickhouse_user": "default",
+    "clickhouse_password": "",
+    "clickhouse_database": "delivery_monitor",
     "monitors": [
         {
             "enabled": true,

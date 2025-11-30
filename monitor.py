@@ -2,7 +2,6 @@ import asyncio
 import base64
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 import time
@@ -20,6 +19,7 @@ from pytoniq_core.crypto import keys
 from tonsdk.utils import sign_message
 
 from client import TonCenterClient, TonCenterV3Client, TonCenterStreamingClient
+from db_backend import DatabaseBackend, create_backend
 
 
 @dataclass
@@ -44,11 +44,9 @@ Client = Union[LiteBalancer, TonCenterClient, AsyncTonapi, TonCenterStreamingCli
 
 class TransactionsMonitor:
     dbname: str
-    connection: sqlite3.Connection
-    cursor: sqlite3.Cursor
+    db: DatabaseBackend
     dbname_second: Optional[str] = None
-    connection_second: Optional[sqlite3.Connection] = None
-    cursor_second: Optional[sqlite3.Cursor] = None
+    db_second: Optional[DatabaseBackend] = None
     with_state_init: bool = False
     sender_client: Optional[TonCenterV3Client] = None  # for streaming mode
 
@@ -59,46 +57,12 @@ class TransactionsMonitor:
             dbstr += "->" + self.dbname_second
         return dbstr
 
-    def init_db(self, second_db: bool = False, with_state_init: bool = False):
-        # if seconds db specified, we'll look (no send) for txs
-        # in the first db and write to second when found
-        os.makedirs("db/", exist_ok=True)
-        query = """
-            CREATE TABLE IF NOT EXISTS txs (
-                addr TEXT,
-                utime REAL,
-                msghash STRING,
-                is_found BOOLEAN,
-                executed_in REAL,
-                found_in REAL,
-                commited_in REAL,
-                sendboc_took REAL,
-                -- streaming fields
-                pending_tx_in REAL,
-                pending_action_in REAL,
-                confirmed_tx_in REAL,
-                confirmed_action_in REAL,
-                finalized_tx_in REAL,
-                finalized_action_in REAL,
-                PRIMARY KEY (addr, utime)
-            )
-            """
-        if not second_db:
-            self.connection = sqlite3.connect(f"db/{self.dbname}.db")
-            self.cursor = self.connection.cursor()
-            self.cursor.execute(query)
-            self.connection.commit()
-        else:
-            self.connection_second = sqlite3.connect(f"db/{self.dbname_second}.db")
-            self.cursor_second = self.connection_second.cursor()
-            self.cursor_second.execute(query)
-            self.connection_second.commit()
-
     def __init__(
         self,
         client: Client,
         wallets_path: str,
         dbname: str,
+        db_config: Optional[dict] = None,
         dbname_second: Optional[str] = None,
         to_send: Optional[int] = None,
         extended_message: bool = False,
@@ -108,16 +72,21 @@ class TransactionsMonitor:
         target_action_type: str = "unknown",
     ):
         self.dbname = dbname
-        self.dbname_second = None
-        self.connection_second = None
-        self.cursor_second = None
+        self.dbname_second = dbname_second
+        self.db_second = None
         self.with_state_init = with_state_init
         self.extra_msg_boc = extra_msg_boc
         self.target_action_type = target_action_type
-        self.init_db()
+        
+        # create db backend from config
+        self.db_config = db_config or {}
+        self.db = create_backend(dbname, self.db_config)
+        self.db.init_db()
+        
         if dbname_second:
-            self.dbname_second = dbname_second
-            self.init_db(second_db=True)
+            self.db_second = create_backend(dbname_second, self.db_config)
+            self.db_second.init_db()
+        
         self.client = client
         self.wallets_path = wallets_path
         self.to_send = to_send
@@ -143,40 +112,17 @@ class TransactionsMonitor:
         self.wallets = wallets
 
     def add_new_tx(self, msg: MsgInfo, sendboc_took: Optional[float] = None) -> None:
-        # insert in first db
-        self.cursor.execute(
-            "INSERT INTO txs (addr, utime, msghash, is_found, sendboc_took) VALUES (?, ?, ?, 0, ?)",
-            (msg.addr, msg.utime, msg.msghash, sendboc_took),
-        )
-        self.connection.commit()
+        self.db.add_new_tx(msg.addr, msg.utime, msg.msghash, sendboc_took)
 
     def get_missing_msgs(self) -> List[MsgInfo]:
-        now = time.time()
-
         # second db may find msg later, when it's found in the first
-        if self.dbname_second:
-            is_found_filter = ""  # fetch all
-        else:
-            is_found_filter = "is_found = 0 AND"
+        include_found = self.dbname_second is not None
+        result = self.db.get_missing_msgs(include_found=include_found)
+        msgs = [MsgInfo(addr=addr, utime=utime, msghash=msghash) for addr, utime, msghash in result]
 
-        self.cursor.execute(
-            f"SELECT addr, utime, msghash FROM txs WHERE {is_found_filter} utime > ?",
-            (now - 1200,),  # 20 min ago or newer
-        )
-        result = self.cursor.fetchall()
-        msgs = []
-        for addr, utime, msghash in result:
-            msgs.append(MsgInfo(addr=addr, utime=utime, msghash=msghash))
-
-        if self.dbname_second and self.cursor_second:
+        if self.db_second:
             # get message hashes found in second DB in last 20 minutes
-            self.cursor_second.execute(
-                "SELECT msghash FROM txs WHERE is_found = 1 AND utime > ?",
-                (now - 1200,),
-            )
-            found_hashes = {row[0] for row in self.cursor_second.fetchall()}
-
-            # filter results, excluding already found hashes
+            found_hashes = self.db_second.get_found_hashes(time.time() - 1200)
             msgs = [msg for msg in msgs if msg.msghash not in found_hashes]
 
         return msgs
@@ -184,20 +130,10 @@ class TransactionsMonitor:
     def make_found(
         self, msg: MsgInfo, executed_in: float, found_in: float, commited_in: Optional[float]
     ) -> None:
-        if not self.dbname_second:
-            self.cursor.execute(
-                "UPDATE txs SET is_found = 1, executed_in = ?, found_in = ?, commited_in = ? WHERE addr = ? AND utime = ?",
-                (executed_in, found_in, commited_in, msg.addr, msg.utime),
-            )
-            self.connection.commit()
+        if not self.db_second:
+            self.db.make_found(msg.addr, msg.utime, msg.msghash, executed_in, found_in, commited_in)
         else:
-            if self.cursor_second is None or self.connection_second is None:
-                raise RuntimeError("Secondary database is not initialized")
-            self.cursor_second.execute(
-                "INSERT OR IGNORE INTO txs (addr, utime, msghash, is_found, executed_in, found_in, commited_in) VALUES (?, ?, ?, 1, ?, ?, ?)",
-                (msg.addr, msg.utime, msg.msghash, executed_in, found_in, commited_in),
-            )
-            self.connection_second.commit()
+            self.db_second.make_found(msg.addr, msg.utime, msg.msghash, executed_in, found_in, commited_in)
 
     async def get_seqno(self, address: str) -> int:
         if isinstance(self.client, TonCenterStreamingClient):
@@ -255,104 +191,35 @@ class TransactionsMonitor:
         enforces order: pending only if no confirmed/finalized, confirmed only if no finalized.
         also nullifies pending time if it arrived too close to confirmed/finalized (<0.1s).
         returns True if field was updated, False if skipped."""
-        # build extra conditions for ordering
-        extra_cond = ""
-        pending_field = None  # field to nullify if too close
-        if field == "pending_tx_in":
-            extra_cond = " AND confirmed_tx_in IS NULL AND finalized_tx_in IS NULL"
-        elif field == "pending_action_in":
-            extra_cond = " AND confirmed_action_in IS NULL AND finalized_action_in IS NULL"
-        elif field == "confirmed_tx_in":
-            extra_cond = " AND finalized_tx_in IS NULL"
-            pending_field = "pending_tx_in"
-        elif field == "confirmed_action_in":
-            extra_cond = " AND finalized_action_in IS NULL"
-            pending_field = "pending_action_in"
-        elif field == "finalized_tx_in":
-            pending_field = "pending_tx_in"
-        elif field == "finalized_action_in":
-            pending_field = "pending_action_in"
+        target_db = self.db_second if self.db_second else self.db
+        updated, fixed_count = target_db.update_streaming_field(msg.addr, msg.utime, msg.msghash, field, value)
         
-        if not self.dbname_second:
-            self.cursor.execute(
-                f"UPDATE txs SET {field} = ? WHERE addr = ? AND utime = ? AND {field} IS NULL{extra_cond}",
-                (value, msg.addr, msg.utime),
-            )
-            updated = self.cursor.rowcount > 0
-            fixed_count = 0
-            # nullify pending if it arrived too close (<0.1s)
-            if updated and pending_field:
-                self.cursor.execute(
-                    f"UPDATE txs SET {pending_field} = NULL WHERE addr = ? AND utime = ? AND {pending_field} IS NOT NULL AND (? - {pending_field}) < 0.1",
-                    (msg.addr, msg.utime, value),
-                )
-                fixed_count = self.cursor.rowcount
-            self.connection.commit()
-            if fixed_count > 0:
+        if fixed_count > 0:
+            # figure out which pending field was nullified
+            pending_field = None
+            if field in ("confirmed_tx_in", "finalized_tx_in"):
+                pending_field = "pending_tx_in"
+            elif field in ("confirmed_action_in", "finalized_action_in"):
+                pending_field = "pending_action_in"
+            if pending_field:
                 logger.warning(f"{self.dbstr}: Nullified {fixed_count} of {pending_field} for {msg.addr}:{msg.utime}")
-            return updated
-        else:
-            if self.cursor_second is None or self.connection_second is None:
-                raise RuntimeError("secondary database is not initialized")
-            # for second db, insert then update with conditions
-            self.cursor_second.execute(
-                f"""INSERT INTO txs (addr, utime, msghash, is_found, {field}) 
-                    VALUES (?, ?, ?, 0, ?)
-                    ON CONFLICT(addr, utime) DO UPDATE SET {field} = ? 
-                    WHERE {field} IS NULL{extra_cond}""",
-                (msg.addr, msg.utime, msg.msghash, value, value),
-            )
-            updated = self.cursor_second.rowcount > 0
-            # nullify pending if it arrived too close (<0.1s)
-            if updated and pending_field:
-                self.cursor_second.execute(
-                    f"UPDATE txs SET {pending_field} = NULL WHERE addr = ? AND utime = ? AND {pending_field} IS NOT NULL AND (? - {pending_field}) < 0.1",
-                    (msg.addr, msg.utime, value),
-                )
-            self.connection_second.commit()
-            return updated
+        
+        return updated
 
     def mark_streaming_found(self, msg: MsgInfo) -> None:
         """mark message as found in streaming mode"""
-        if not self.dbname_second:
-            self.cursor.execute(
-                "UPDATE txs SET is_found = 1 WHERE addr = ? AND utime = ?",
-                (msg.addr, msg.utime),
-            )
-            self.connection.commit()
-        else:
-            if self.cursor_second is None or self.connection_second is None:
-                raise RuntimeError("secondary database is not initialized")
-            self.cursor_second.execute(
-                "UPDATE txs SET is_found = 1 WHERE addr = ? AND utime = ?",
-                (msg.addr, msg.utime),
-            )
-            self.connection_second.commit()
+        target_db = self.db_second if self.db_second else self.db
+        target_db.mark_streaming_found(msg.addr, msg.utime)
 
     def get_streaming_missing_msgs(self) -> List[MsgInfo]:
         """get messages not yet fully tracked by streaming"""
-        now = time.time()
         # for streaming we track until finalized_tx_in and finalized_action_in are set
-        if self.dbname_second:
-            is_found_filter = ""
-        else:
-            is_found_filter = "is_found = 0 AND"
+        include_found = self.dbname_second is not None
+        result = self.db.get_missing_msgs(include_found=include_found)
+        msgs = [MsgInfo(addr=addr, utime=utime, msghash=msghash) for addr, utime, msghash in result]
         
-        self.cursor.execute(
-            f"SELECT addr, utime, msghash FROM txs WHERE {is_found_filter} utime > ?",
-            (now - 1200,),
-        )
-        result = self.cursor.fetchall()
-        msgs = []
-        for addr, utime, msghash in result:
-            msgs.append(MsgInfo(addr=addr, utime=utime, msghash=msghash))
-        
-        if self.dbname_second and self.cursor_second:
-            self.cursor_second.execute(
-                "SELECT msghash FROM txs WHERE is_found = 1 AND utime > ?",
-                (now - 1200,),
-            )
-            found_hashes = {row[0] for row in self.cursor_second.fetchall()}
+        if self.db_second:
+            found_hashes = self.db_second.get_found_hashes(time.time() - 1200)
             msgs = [msg for msg in msgs if msg.msghash not in found_hashes]
         
         return msgs
@@ -893,7 +760,8 @@ async def main():
     config = json.loads(open("configs/mainnet.json").read())
     client = LiteBalancer.from_config(config, timeout=15)
     wallets_path = "mywallets/w-c5-1.txt"
-    monitor = TransactionsMonitor(client, wallets_path, dbname)
+    db_config = {"db_backend": "sqlite"}  # or "clickhouse" with extra params
+    monitor = TransactionsMonitor(client, wallets_path, dbname, db_config=db_config)
     await monitor.start_worker()
 
 
