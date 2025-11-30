@@ -40,6 +40,12 @@ class DatabaseBackend(ABC):
         pass
     
     @abstractmethod
+    def update_blockchain_times(self, addr: str, utime: float, 
+                                executed_in: Optional[float], commited_in: Optional[float]) -> None:
+        """update executed_in and commited_in from blockchain data (it may lie)"""
+        pass
+    
+    @abstractmethod
     def get_found_hashes(self, since: float) -> set:
         pass
     
@@ -162,6 +168,26 @@ class SQLiteBackend(DatabaseBackend):
             (addr, utime),
         )
         self.connection.commit()
+    
+    def update_blockchain_times(self, addr: str, utime: float,
+                                executed_in: Optional[float], commited_in: Optional[float]) -> None:
+        # update only if not already set
+        updates = []
+        params = []
+        if executed_in is not None:
+            updates.append("executed_in = CASE WHEN executed_in IS NULL THEN ? ELSE executed_in END")
+            params.append(executed_in)
+        if commited_in is not None:
+            updates.append("commited_in = CASE WHEN commited_in IS NULL THEN ? ELSE commited_in END")
+            params.append(commited_in)
+        
+        if updates:
+            params.extend([addr, utime])
+            self.cursor.execute(
+                f"UPDATE txs SET {', '.join(updates)} WHERE addr = ? AND utime = ?",
+                params,
+            )
+            self.connection.commit()
     
     def get_found_hashes(self, since: float) -> set:
         self.cursor.execute(
@@ -408,6 +434,24 @@ class ClickHouseBackend(DatabaseBackend):
                      finalized_tx_in, finalized_action_in) VALUES""",
                 [(addr, utime, current["msghash"], 1,
                   current["executed_in"], current["found_in"], current["commited_in"], current["sendboc_took"],
+                  current["pending_tx_in"], current["pending_action_in"],
+                  current["confirmed_tx_in"], current["confirmed_action_in"],
+                  current["finalized_tx_in"], current["finalized_action_in"])],
+            )
+    
+    def update_blockchain_times(self, addr: str, utime: float,
+                                executed_in: Optional[float], commited_in: Optional[float]) -> None:
+        current = self._get_current_row(addr, utime)
+        if current:
+            new_executed = executed_in if current["executed_in"] is None else current["executed_in"]
+            new_commited = commited_in if current["commited_in"] is None else current["commited_in"]
+            self.client.execute(
+                f"""INSERT INTO {self.table} 
+                    (addr, utime, msghash, is_found, executed_in, found_in, commited_in, sendboc_took,
+                     pending_tx_in, pending_action_in, confirmed_tx_in, confirmed_action_in,
+                     finalized_tx_in, finalized_action_in) VALUES""",
+                [(addr, utime, current["msghash"], current["is_found"],
+                  new_executed, current["found_in"], new_commited, current["sendboc_took"],
                   current["pending_tx_in"], current["pending_action_in"],
                   current["confirmed_tx_in"], current["confirmed_action_in"],
                   current["finalized_tx_in"], current["finalized_action_in"])],
