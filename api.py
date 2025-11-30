@@ -32,7 +32,8 @@ def load_db_config():
             "clickhouse_port": data.get("clickhouse_port", 9000),
             "clickhouse_user": data.get("clickhouse_user", "default"),
             "clickhouse_password": data.get("clickhouse_password", ""),
-            "clickhouse_database": data.get("clickhouse_database", "default"),
+            "clickhouse_database_mainnet": data.get("clickhouse_database_mainnet", "default"),
+            "clickhouse_database_testnet": data.get("clickhouse_database_testnet", "default"),
         }
         logger.info(f"Loaded db config: backend={_db_config['db_backend']}")
     except Exception as e:
@@ -40,7 +41,7 @@ def load_db_config():
         _db_config = {"db_backend": "sqlite"}
 
 
-def get_backend(dbname: str) -> Optional[DatabaseBackend]:
+def get_backend(dbname: str, testnet: bool = False) -> Optional[DatabaseBackend]:
     """create backend for given dbname, returns None if db doesn't exist"""
     backend_type = _db_config.get("db_backend", "sqlite")
     
@@ -50,14 +51,19 @@ def get_backend(dbname: str) -> Optional[DatabaseBackend]:
             return None
         return SQLiteBackend(dbname)
     else:
-        # for clickhouse, just try to connect
+        # select database based on testnet flag
+        if testnet:
+            database = _db_config.get("clickhouse_database_testnet", "default")
+        else:
+            database = _db_config.get("clickhouse_database_mainnet", "default")
+        
         return ClickHouseBackend(
             dbname=dbname,
             host=_db_config.get("clickhouse_host", "localhost"),
             port=_db_config.get("clickhouse_port", 9000),
             user=_db_config.get("clickhouse_user", "default"),
             password=_db_config.get("clickhouse_password", ""),
-            database=_db_config.get("clickhouse_database", "default"),
+            database=database,
         )
 
 
@@ -138,13 +144,15 @@ time_intervals = [
 @app.route("/interval/<path:path>")
 def interval(path):
     """Get averages on period of now-1h to now-60sec. 1h interval can
-    be changed to any value by setting `seconds` parameter."""
+    be changed to any value by setting `seconds` parameter.
+    Use ?testnet=1 for testnet database."""
 
     if path.find("/") != -1:
         logger.debug(f"Invalid db path: {path}")
         return {"error": "invalid path: / not allowed"}
 
-    backend = get_backend(path)
+    testnet = request.args.get("testnet", "0") == "1"
+    backend = get_backend(path, testnet=testnet)
     if backend is None:
         logger.debug(f"Invalid db path: {path}")
         return {"error": "no such db"}
@@ -175,11 +183,13 @@ def interval(path):
 
 @app.route("/stats/<path:path>")
 def get_processed(path):
+    """Get stats for multiple time intervals. Use ?testnet=1 for testnet database."""
     if path.find("/") != -1:
         logger.debug(f"Invalid db path: {path}")
         return {"error": "invalid path: / not allowed"}
 
-    backend = get_backend(path)
+    testnet = request.args.get("testnet", "0") == "1"
+    backend = get_backend(path, testnet=testnet)
     if backend is None:
         logger.debug(f"Invalid db path: {path}")
         return {"error": "no such db"}

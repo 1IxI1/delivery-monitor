@@ -11,7 +11,18 @@ from monitor import TransactionsMonitor
 filename = "monitors.json"
 
 # global db config, set from top-level of monitors.json
-_db_config: dict = {}
+_db_config_base: dict = {}
+
+
+def get_db_config(is_testnet: bool) -> dict:
+    """get db config with correct database for testnet/mainnet"""
+    config = _db_config_base.copy()
+    if config.get("db_backend") == "clickhouse":
+        if is_testnet:
+            config["clickhouse_database"] = config.get("clickhouse_database_testnet", "default")
+        else:
+            config["clickhouse_database"] = config.get("clickhouse_database_mainnet", "default")
+    return config
 
 
 async def start_monitor(monitor_params: dict):
@@ -19,6 +30,7 @@ async def start_monitor(monitor_params: dict):
 
     provider = monitor_params["provider"]
     wallets_path = monitor_params["wallets"]
+    is_testnet = monitor_params.get("testnet", False)
 
     if provider == "liteserver":
         config_path = monitor_params["config"]
@@ -70,8 +82,11 @@ async def start_monitor(monitor_params: dict):
     extra_msg_boc = monitor_params.get("extra_msg_boc", None)
     target_action_type = monitor_params.get("target_action_type", "unknown")
 
+    # get db config with correct database for this monitor's network
+    db_config = get_db_config(is_testnet)
+
     monitor = TransactionsMonitor(
-        client, wallets_path, dbname, db_config=_db_config,
+        client, wallets_path, dbname, db_config=db_config,
         dbname_second=dbname_second, to_send=to_send,
         sender_client=monitor_sender_client, with_state_init=with_state_init,
         extra_msg_boc=extra_msg_boc, target_action_type=target_action_type
@@ -80,19 +95,20 @@ async def start_monitor(monitor_params: dict):
 
 
 async def start_all():
-    global _db_config
+    global _db_config_base
     
     with open(filename, "r") as f:
         data = json.load(f)
     
     # load db config from top-level (shared by all monitors)
-    _db_config = {
+    _db_config_base = {
         "db_backend": data.get("db_backend", "sqlite"),
         "clickhouse_host": data.get("clickhouse_host", "localhost"),
         "clickhouse_port": data.get("clickhouse_port", 9000),
         "clickhouse_user": data.get("clickhouse_user", "default"),
         "clickhouse_password": data.get("clickhouse_password", ""),
-        "clickhouse_database": data.get("clickhouse_database", "default"),
+        "clickhouse_database_mainnet": data.get("clickhouse_database_mainnet", "default"),
+        "clickhouse_database_testnet": data.get("clickhouse_database_testnet", "default"),
     }
     
     # if server run - log to file.

@@ -5,7 +5,8 @@
     "clickhouse_port": 9000,
     "clickhouse_user": "default",
     "clickhouse_password": "",
-    "clickhouse_database": "delivery_monitor",
+    "clickhouse_database_mainnet": "dm_mainnet",
+    "clickhouse_database_testnet": "dm_testnet",
     "monitors": [
         {
             "enabled": true,
