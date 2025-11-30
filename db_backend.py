@@ -41,8 +41,9 @@ class DatabaseBackend(ABC):
     
     @abstractmethod
     def update_blockchain_times(self, addr: str, utime: float, 
-                                executed_in: Optional[float], commited_in: Optional[float]) -> None:
-        """update executed_in and commited_in from blockchain data (it may lie)"""
+                                executed_in: Optional[float], commited_in: Optional[float],
+                                streaming_to_v3_lag: Optional[float] = None) -> None:
+        """update executed_in, commited_in and streaming_to_v3_lag from blockchain data"""
         pass
     
     @abstractmethod
@@ -92,6 +93,7 @@ class SQLiteBackend(DatabaseBackend):
                 confirmed_action_in REAL,
                 finalized_tx_in REAL,
                 finalized_action_in REAL,
+                streaming_to_v3_lag REAL,
                 PRIMARY KEY (addr, utime)
             )
         """)
@@ -170,7 +172,8 @@ class SQLiteBackend(DatabaseBackend):
         self.connection.commit()
     
     def update_blockchain_times(self, addr: str, utime: float,
-                                executed_in: Optional[float], commited_in: Optional[float]) -> None:
+                                executed_in: Optional[float], commited_in: Optional[float],
+                                streaming_to_v3_lag: Optional[float] = None) -> None:
         # update only if not already set
         updates = []
         params = []
@@ -180,6 +183,9 @@ class SQLiteBackend(DatabaseBackend):
         if commited_in is not None:
             updates.append("commited_in = CASE WHEN commited_in IS NULL THEN ? ELSE commited_in END")
             params.append(commited_in)
+        if streaming_to_v3_lag is not None:
+            updates.append("streaming_to_v3_lag = CASE WHEN streaming_to_v3_lag IS NULL THEN ? ELSE streaming_to_v3_lag END")
+            params.append(streaming_to_v3_lag)
         
         if updates:
             params.extend([addr, utime])
@@ -210,7 +216,8 @@ class SQLiteBackend(DatabaseBackend):
                    AVG(sendboc_took),
                    AVG(pending_tx_in), AVG(pending_action_in),
                    AVG(confirmed_tx_in), AVG(confirmed_action_in),
-                   AVG(finalized_tx_in), AVG(finalized_action_in)
+                   AVG(finalized_tx_in), AVG(finalized_action_in),
+                   AVG(streaming_to_v3_lag)
             FROM txs WHERE utime >= ? AND utime <= ?
             ORDER BY utime DESC LIMIT 1""",
             (now - 60 - interval_sec, now - 60),
@@ -235,7 +242,8 @@ class SQLiteBackend(DatabaseBackend):
                    AVG(sendboc_took),
                    AVG(pending_tx_in), AVG(pending_action_in),
                    AVG(confirmed_tx_in), AVG(confirmed_action_in),
-                   AVG(finalized_tx_in), AVG(finalized_action_in)
+                   AVG(finalized_tx_in), AVG(finalized_action_in),
+                   AVG(streaming_to_v3_lag)
             FROM txs WHERE utime >= ? {addr_appendix}
             ORDER BY utime DESC LIMIT 1""",
             (now - interval_sec,),
@@ -298,6 +306,7 @@ class ClickHouseBackend(DatabaseBackend):
                 confirmed_action_in Nullable(Float64),
                 finalized_tx_in Nullable(Float64),
                 finalized_action_in Nullable(Float64),
+                streaming_to_v3_lag Nullable(Float64),
                 updated_at DateTime DEFAULT now()
             ) ENGINE = ReplacingMergeTree(updated_at)
             ORDER BY (addr, utime)
@@ -339,7 +348,7 @@ class ClickHouseBackend(DatabaseBackend):
         rows = self.client.execute(
             f"""SELECT msghash, is_found, executed_in, found_in, commited_in, sendboc_took,
                        pending_tx_in, pending_action_in, confirmed_tx_in, confirmed_action_in,
-                       finalized_tx_in, finalized_action_in
+                       finalized_tx_in, finalized_action_in, streaming_to_v3_lag
                 FROM {self.table} FINAL WHERE addr = %(addr)s AND utime = %(utime)s""",
             {"addr": addr, "utime": utime},
         )
@@ -352,6 +361,7 @@ class ClickHouseBackend(DatabaseBackend):
             "pending_tx_in": row[6], "pending_action_in": row[7],
             "confirmed_tx_in": row[8], "confirmed_action_in": row[9],
             "finalized_tx_in": row[10], "finalized_action_in": row[11],
+            "streaming_to_v3_lag": row[12],
         }
     
     def update_streaming_field(self, addr: str, utime: float, msghash: str,
@@ -401,6 +411,7 @@ class ClickHouseBackend(DatabaseBackend):
             "confirmed_action_in": current.get("confirmed_action_in") if current else None,
             "finalized_tx_in": current.get("finalized_tx_in") if current else None,
             "finalized_action_in": current.get("finalized_action_in") if current else None,
+            "streaming_to_v3_lag": current.get("streaming_to_v3_lag") if current else None,
         }
         new_row[field] = value
         
@@ -415,12 +426,12 @@ class ClickHouseBackend(DatabaseBackend):
             f"""INSERT INTO {self.table} 
                 (addr, utime, msghash, is_found, executed_in, found_in, commited_in, sendboc_took,
                  pending_tx_in, pending_action_in, confirmed_tx_in, confirmed_action_in,
-                 finalized_tx_in, finalized_action_in) VALUES""",
+                 finalized_tx_in, finalized_action_in, streaming_to_v3_lag) VALUES""",
             [(new_row["addr"], new_row["utime"], new_row["msghash"], new_row["is_found"],
               new_row["executed_in"], new_row["found_in"], new_row["commited_in"], new_row["sendboc_took"],
               new_row["pending_tx_in"], new_row["pending_action_in"],
               new_row["confirmed_tx_in"], new_row["confirmed_action_in"],
-              new_row["finalized_tx_in"], new_row["finalized_action_in"])],
+              new_row["finalized_tx_in"], new_row["finalized_action_in"], new_row["streaming_to_v3_lag"])],
         )
         return True, fixed_count
     
@@ -431,30 +442,32 @@ class ClickHouseBackend(DatabaseBackend):
                 f"""INSERT INTO {self.table} 
                     (addr, utime, msghash, is_found, executed_in, found_in, commited_in, sendboc_took,
                      pending_tx_in, pending_action_in, confirmed_tx_in, confirmed_action_in,
-                     finalized_tx_in, finalized_action_in) VALUES""",
+                     finalized_tx_in, finalized_action_in, streaming_to_v3_lag) VALUES""",
                 [(addr, utime, current["msghash"], 1,
                   current["executed_in"], current["found_in"], current["commited_in"], current["sendboc_took"],
                   current["pending_tx_in"], current["pending_action_in"],
                   current["confirmed_tx_in"], current["confirmed_action_in"],
-                  current["finalized_tx_in"], current["finalized_action_in"])],
+                  current["finalized_tx_in"], current["finalized_action_in"], current["streaming_to_v3_lag"])],
             )
     
     def update_blockchain_times(self, addr: str, utime: float,
-                                executed_in: Optional[float], commited_in: Optional[float]) -> None:
+                                executed_in: Optional[float], commited_in: Optional[float],
+                                streaming_to_v3_lag: Optional[float] = None) -> None:
         current = self._get_current_row(addr, utime)
         if current:
             new_executed = executed_in if current["executed_in"] is None else current["executed_in"]
             new_commited = commited_in if current["commited_in"] is None else current["commited_in"]
+            new_lag = streaming_to_v3_lag if current["streaming_to_v3_lag"] is None else current["streaming_to_v3_lag"]
             self.client.execute(
                 f"""INSERT INTO {self.table} 
                     (addr, utime, msghash, is_found, executed_in, found_in, commited_in, sendboc_took,
                      pending_tx_in, pending_action_in, confirmed_tx_in, confirmed_action_in,
-                     finalized_tx_in, finalized_action_in) VALUES""",
+                     finalized_tx_in, finalized_action_in, streaming_to_v3_lag) VALUES""",
                 [(addr, utime, current["msghash"], current["is_found"],
                   new_executed, current["found_in"], new_commited, current["sendboc_took"],
                   current["pending_tx_in"], current["pending_action_in"],
                   current["confirmed_tx_in"], current["confirmed_action_in"],
-                  current["finalized_tx_in"], current["finalized_action_in"])],
+                  current["finalized_tx_in"], current["finalized_action_in"], new_lag)],
             )
     
     def get_found_hashes(self, since: float) -> set:
@@ -480,7 +493,8 @@ class ClickHouseBackend(DatabaseBackend):
                    avg(sendboc_took),
                    avg(pending_tx_in), avg(pending_action_in),
                    avg(confirmed_tx_in), avg(confirmed_action_in),
-                   avg(finalized_tx_in), avg(finalized_action_in)
+                   avg(finalized_tx_in), avg(finalized_action_in),
+                   avg(streaming_to_v3_lag)
             FROM {self.table} FINAL
             WHERE utime >= %(from_time)s AND utime <= %(to_time)s""",
             {"from_time": now - 60 - interval_sec, "to_time": now - 60},
@@ -509,7 +523,8 @@ class ClickHouseBackend(DatabaseBackend):
                    avg(sendboc_took),
                    avg(pending_tx_in), avg(pending_action_in),
                    avg(confirmed_tx_in), avg(confirmed_action_in),
-                   avg(finalized_tx_in), avg(finalized_action_in)
+                   avg(finalized_tx_in), avg(finalized_action_in),
+                   avg(streaming_to_v3_lag)
             FROM {self.table} FINAL
             WHERE utime >= %(since)s {addr_filter}""",
             params,

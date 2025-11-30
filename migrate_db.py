@@ -15,6 +15,7 @@ NEW_COLUMNS = [
     ("confirmed_action_in", "REAL"),
     ("finalized_tx_in", "REAL"),
     ("finalized_action_in", "REAL"),
+    ("streaming_to_v3_lag", "REAL"),
 ]
 
 

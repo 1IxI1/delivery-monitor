@@ -171,34 +171,27 @@ class TransactionsMonitor:
             await asyncio.sleep(2)
 
     async def get_mc_block_time(self, seqno: int) -> Optional[float]:
-        """get masterchain block utime by seqno, with caching"""
+        """get masterchain block utime by seqno, polls until v3 indexes it"""
         if seqno in self.mc_block_cache:
-            logger.debug(f"{self.dbstr}: mc block time cached: {seqno} -> {self.mc_block_cache[seqno]}")
             return self.mc_block_cache[seqno]
         
         if not self.sender_client:
             logger.warning(f"{self.dbstr}: sender_client not set")
             return None
         
-        # retry a few times - v3 may not have indexed the block yet
-        for attempt in range(3):
+        # poll until v3 indexes the block (up to 100 attempts)
+        for attempt in range(100):
             try:
-                t_block = time.time()
                 blocks = await self.sender_client.get_blocks(wc=-1, seqno=seqno, limit=1)
-                t_block = time.time() - t_block
-                logger.debug(f"{self.dbstr}: get_blocks took {int(t_block*1000)}ms")
                 if blocks.get("blocks"):
                     utime = float(blocks["blocks"][0]["gen_utime"])
                     self.mc_block_cache[seqno] = utime
+                    if attempt > 0:
+                        logger.debug(f"{self.dbstr}: mc block {seqno} found after {attempt+1} attempts")
                     return utime
-                # not indexed yet, wait and retry
-                if attempt < 2:
-                    await asyncio.sleep(2)
             except Exception as e:
                 logger.warning(f"{self.dbstr}: failed to get mc block {seqno}: {e}")
-                if attempt < 2:
-                    await asyncio.sleep(2)
-        logger.error(f"{self.dbstr}: mc block {seqno} not found after retries")
+        logger.error(f"{self.dbstr}: mc block {seqno} not found after 100 attempts")
         return None
 
     def insert_found_msg(
@@ -356,8 +349,8 @@ class TransactionsMonitor:
                         
                         if matched:
                             # capture time immediately before any async ops
-                            time_in = time.time() - m.utime
-                            updated = self.update_streaming_field(m, field, time_in)
+                            t_on_event = time.time()
+                            time_in = t_on_event - m.utime
 
                             # extract blockchain times from finalized action
                             if field == "finalized_action_in" and matched_action:
@@ -366,17 +359,20 @@ class TransactionsMonitor:
                                 if end_utime:
                                     executed_in = float(end_utime) - m.utime
                                     commited_in = None
+                                    streaming_to_v3_lag = None
                                     if mc_seqno:
                                         mc_utime = await self.get_mc_block_time(mc_seqno)
+                                        streaming_to_v3_lag = time.time() - t_on_event
                                         if mc_utime:
                                             commited_in = mc_utime - m.utime
                                     target_db = self.db_second if self.db_second else self.db
-                                    target_db.update_blockchain_times(m.addr, m.utime, executed_in, commited_in)
-                                    logger.debug(f"{self.dbstr}: blockchain times: executed={executed_in:.3f}s, commited={commited_in:.3f}s" 
-                                                 if commited_in else f"{self.dbstr}: blockchain times: executed={executed_in:.3f}s")
-                                    if not commited_in:
-                                        logger.warning(f"{self.dbstr}: no commited time for {m.addr}:{m.utime}")
-                            
+                                    target_db.update_blockchain_times(m.addr, m.utime, executed_in, commited_in, streaming_to_v3_lag)
+                                    logger.info(f"{self.dbstr}: blockchain: executed={executed_in:.3f}s, commited={commited_in:.3f}s, v3_lag={streaming_to_v3_lag:.3f}s" 
+                                                if commited_in else f"{self.dbstr}: blockchain: executed={executed_in:.3f}s, v3_lag={streaming_to_v3_lag:.3f}s")
+
+                            # update streaming field
+                            updated = self.update_streaming_field(m, field, time_in)
+
                             # only log and track if actually updated (skip duplicates)
                             if not updated:
                                 continue
