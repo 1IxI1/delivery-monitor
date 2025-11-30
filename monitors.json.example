@@ -1,5 +1,7 @@
 {
     "cli": true,
+    "valid_until_timeout": 40,
+    "send_interval": 40,
     "db_backend": "sqlite",
     "clickhouse_host": "localhost",
     "clickhouse_port": 9000,

@@ -36,8 +36,9 @@ class MsgInfo:
     msghash: str
 
 
-VALID_UNTIL_TIMEOUT = 40
-SEND_INTERVAL = 40
+# defaults, can be overridden in monitors.json
+DEFAULT_VALID_UNTIL_TIMEOUT = 40
+DEFAULT_SEND_INTERVAL = 40
 
 Client = Union[LiteBalancer, TonCenterClient, AsyncTonapi, TonCenterStreamingClient]
 
@@ -70,6 +71,8 @@ class TransactionsMonitor:
         with_state_init: bool = False,
         extra_msg_boc: Optional[str] = None,
         target_action_type: str = "unknown",
+        valid_until_timeout: int = DEFAULT_VALID_UNTIL_TIMEOUT,
+        send_interval: int = DEFAULT_SEND_INTERVAL,
     ):
         self.dbname = dbname
         self.dbname_second = dbname_second
@@ -77,6 +80,8 @@ class TransactionsMonitor:
         self.with_state_init = with_state_init
         self.extra_msg_boc = extra_msg_boc
         self.target_action_type = target_action_type
+        self.valid_until_timeout = valid_until_timeout
+        self.send_interval = send_interval
         
         # create db backend from config
         self.db_config = db_config or {}
@@ -419,7 +424,7 @@ class TransactionsMonitor:
         msg_slice.skip_bits(512)  # signature
         msg_slice.skip_bits(32)  # seqno
         valid_until = msg_slice.load_uint(48)
-        msg_sent_at = valid_until - VALID_UNTIL_TIMEOUT  # get sending time
+        msg_sent_at = valid_until - self.valid_until_timeout  # get sending time
 
         for i in self.get_missing_msgs():
             if int(i.utime) == msg_sent_at and i.addr == addr:
@@ -438,7 +443,7 @@ class TransactionsMonitor:
         body_slice.skip_bits(512)  # signature
         body_slice.skip_bits(32)  # seqno
         valid_until = body_slice.load_uint(48)
-        msg_sent_at = valid_until - VALID_UNTIL_TIMEOUT  # get sending time
+        msg_sent_at = valid_until - self.valid_until_timeout  # get sending time
         return int(missing_msg_utime) == msg_sent_at and missing_msg_addr == msg_addr
 
     def extend_message_to_1kb(self, body: Builder):
@@ -526,7 +531,7 @@ class TransactionsMonitor:
             )
 
         # make a signature of `valid_until * seqno`
-        valid_until = int(time.time()) + VALID_UNTIL_TIMEOUT
+        valid_until = int(time.time()) + self.valid_until_timeout
         stamp = valid_until * seqno
         stamp_bytes = stamp.to_bytes(32, "big")
         signature = sign_message(stamp_bytes, wdata.sk).signature
@@ -593,7 +598,7 @@ class TransactionsMonitor:
         )
 
     async def start_sending(self):
-        """Txs sender. Sends them every `SEND_INTERVAL` seconds to
+        """Txs sender. Sends them every `send_interval` seconds to
         all the wallets specified in `self.wallets`."""
         while self.sent_count < (self.to_send or 100000000):  # 400 years by default
             for wdata in self.wallets:
@@ -604,7 +609,7 @@ class TransactionsMonitor:
                         f"{self.dbstr}: Failed to send tx to wallet "
                         + f"{wdata.addr} error: {str(e)}"
                     )
-            await asyncio.sleep(SEND_INTERVAL)
+            await asyncio.sleep(self.send_interval)
 
     async def watch_transactions(self):
         """Watches for sent tx to be shown up on wallets

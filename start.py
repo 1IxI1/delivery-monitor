@@ -10,8 +10,10 @@ from monitor import TransactionsMonitor
 
 filename = "monitors.json"
 
-# global db config, set from top-level of monitors.json
+# global config, set from top-level of monitors.json
 _db_config_base: dict = {}
+_valid_until_timeout: int = 40
+_send_interval: int = 40
 
 
 def get_db_config(is_testnet: bool) -> dict:
@@ -89,16 +91,21 @@ async def start_monitor(monitor_params: dict):
         client, wallets_path, dbname, db_config=db_config,
         dbname_second=dbname_second, to_send=to_send,
         sender_client=monitor_sender_client, with_state_init=with_state_init,
-        extra_msg_boc=extra_msg_boc, target_action_type=target_action_type
+        extra_msg_boc=extra_msg_boc, target_action_type=target_action_type,
+        valid_until_timeout=_valid_until_timeout, send_interval=_send_interval
     )
     await monitor.start_worker()
 
 
 async def start_all():
-    global _db_config_base
+    global _db_config_base, _valid_until_timeout, _send_interval
     
     with open(filename, "r") as f:
         data = json.load(f)
+    
+    # load global timing config
+    _valid_until_timeout = data.get("valid_until_timeout", 40)
+    _send_interval = data.get("send_interval", 40)
     
     # load db config from top-level (shared by all monitors)
     _db_config_base = {
