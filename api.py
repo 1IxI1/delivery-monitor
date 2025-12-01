@@ -96,6 +96,8 @@ def format_stats_result(res: tuple) -> dict:
         "finalized_tx_in_avg": round(res[19] or 0, 6) if res[19] is not None else None,
         "finalized_action_in_avg": round(res[20] or 0, 6) if res[20] is not None else None,
         "streaming_to_v3_lag_avg": round(res[21] or 0, 6) if res[21] is not None else None,
+        "ping_ws_avg": round(res[22] or 0, 6) if res[22] is not None else None,
+        "ping_v3_avg": round(res[23] or 0, 6) if res[23] is not None else None,
     }
 
 

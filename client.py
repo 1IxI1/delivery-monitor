@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import time
 from abc import ABC, abstractmethod
 from typing import Callable, Optional
 
@@ -177,6 +178,7 @@ class TonCenterClient(AbstractTonClient):
 class TonCenterV3Client(TonCenterClient):
     def __init__(self, api_url: str, api_key: str):
         super().__init__(api_url, api_key)
+        self._last_ping_v3: Optional[float] = None
 
     async def get_transaction_by_hash(self, msg_hash: str):
         async with aiohttp.ClientSession() as session:
@@ -201,6 +203,7 @@ class TonCenterV3Client(TonCenterClient):
         limit: int = 10,
     ):
         """Only some of params yet implemented, just for this monitoring"""
+        start_time = time.time()
         async with aiohttp.ClientSession() as session:
             params = {"workchain": wc, "shard": shard, "seqno": seqno, "limit": limit}
             params = {k: v for k, v in params.items() if v is not None}
@@ -214,7 +217,15 @@ class TonCenterV3Client(TonCenterClient):
                 },
                 params=params,
             )
-            return await r.json()
+            result = await r.json()
+            # measure ping RTT
+            rtt = (time.time() - start_time) * 1000  # to ms
+            self._last_ping_v3 = rtt
+            return result
+    
+    def get_last_ping_v3(self) -> Optional[float]:
+        """get last V3 API ping RTT in ms"""
+        return self._last_ping_v3
 
     async def send(self, boc: bytes) -> str:
         """Returns message hash in base64 format"""
@@ -263,6 +274,8 @@ class TonCenterStreamingClient:
         self._ping_task: Optional[asyncio.Task] = None
         self._stop_ping = False
         self._subscribed_addresses: set[str] = set()
+        self._last_ping_send_time: Optional[float] = None 
+        self._last_ping_ws: Optional[float] = None
     
     async def connect(self) -> bool:
         """connect to websocket with api key"""
@@ -284,13 +297,19 @@ class TonCenterStreamingClient:
             try:
                 await asyncio.sleep(15)
                 if self.websocket and not self._stop_ping:
-                    ping_msg = {"operation": "ping", "id": f"ping-{ping_id}"}
+                    ping_id_str = f"ping-{ping_id}"
+                    ping_msg = {"operation": "ping", "id": ping_id_str}
+                    self._last_ping_send_time = time.time()
                     await self.websocket.send(json.dumps(ping_msg))
                     ping_id += 1
             except Exception as e:
                 if not self._stop_ping:
                     logger.warning(f"streaming: ping failed: {e}")
                 break
+    
+    def get_last_ping_ws(self) -> Optional[float]:
+        """get last WS ping-pong RTT in ms"""
+        return self._last_ping_ws
     
     async def close(self):
         """close websocket connection"""
@@ -305,6 +324,7 @@ class TonCenterStreamingClient:
             await self.websocket.close()
             self.websocket = None
         self._subscribed_addresses.clear()
+        self._last_ping_send_time = None
         logger.debug(f"streaming: connection closed")
     
     async def subscribe(self, addresses: list[str], types: list[str]) -> bool:
@@ -368,7 +388,11 @@ class TonCenterStreamingClient:
                         if status == "subscribed":
                             logger.debug(f"streaming: subscribed")
                         elif status == "pong":
-                            pass  # silent pong
+                            # measure ping-pong RTT from last sent ping
+                            if self._last_ping_send_time:
+                                rtt = (time.time() - self._last_ping_send_time) * 1000  # to ms
+                                self._last_ping_ws = rtt
+                                logger.debug(f"streaming: ping-pong RTT: {rtt:.2f}ms")
                         elif status == "unsubscribed":
                             logger.debug(f"streaming: unsubscribed")
                         continue

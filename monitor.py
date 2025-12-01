@@ -365,13 +365,25 @@ class TransactionsMonitor:
                                     executed_in = float(end_utime) - m.utime
                                     commited_in = None
                                     streaming_to_v3_lag = None
+                                    ping_ws = None
+                                    ping_v3 = None
+                                    
+                                    # get ping values
+                                    if isinstance(self.client, TonCenterStreamingClient):
+                                        ping_ws = self.client.get_last_ping_ws()
+                                    if self.sender_client:
+                                        ping_v3 = self.sender_client.get_last_ping_v3()
+                                    
                                     if mc_seqno:
                                         mc_utime = await self.get_mc_block_time(mc_seqno)
                                         streaming_to_v3_lag = time.time() - t_on_event
                                         if mc_utime:
                                             commited_in = mc_utime - m.utime
+                                        # update ping_v3 after get_mc_block_time (it measures ping)
+                                        if self.sender_client:
+                                            ping_v3 = self.sender_client.get_last_ping_v3()
                                     target_db = self.db_second if self.db_second else self.db
-                                    target_db.update_blockchain_times(m.addr, m.utime, executed_in, commited_in, streaming_to_v3_lag)
+                                    target_db.update_blockchain_times(m.addr, m.utime, executed_in, commited_in, streaming_to_v3_lag, ping_ws, ping_v3)
                                     logger.info(f"{self.dbstr}: blockchain: executed={executed_in:.3f}s, commited={commited_in:.3f}s, v3_lag={streaming_to_v3_lag:.3f}s" 
                                                 if commited_in else f"{self.dbstr}: blockchain: executed={executed_in:.3f}s, v3_lag={streaming_to_v3_lag:.3f}s")
 
