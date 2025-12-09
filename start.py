@@ -125,7 +125,7 @@ async def start_all():
         logger.remove()
         logger.add(
             f"monitor.log",
-            level="INFO",
+            level="DEBUG",
             rotation="1 GB",
             compression="zip",
         )

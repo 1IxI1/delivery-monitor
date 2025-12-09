@@ -337,7 +337,7 @@ class TonCenterStreamingClient:
                 "operation": "subscribe",
                 "addresses": addresses,
                 "types": types,
-                "min_finality": "emulated", # soon be pending
+                "min_finality": "pending",
                 # "supported_action_types": ["v1"],
                 "include_address_book": True,
                 "include_metadata": False
