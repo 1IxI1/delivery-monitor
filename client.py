@@ -195,6 +195,20 @@ class TonCenterV3Client(TonCenterClient):
             response = await r.json()
             return response
 
+    async def get_transactions_by_hash(self, tx_hash: str, limit: int = 10):
+        async with aiohttp.ClientSession() as session:
+            params = {"hash": tx_hash, "limit": limit, "offset": 0, "sort": "desc"}
+            r = await session.get(
+                f"{self.provider.base_url}transactions",
+                params=params,
+                headers={
+                    "X-API-Key": self.provider.api_key,
+                    "Content-Type": "application/json",
+                    "accept": "application/json",
+                },
+            )
+            return await r.json()
+
     async def get_blocks(
         self,
         wc: int = 0,

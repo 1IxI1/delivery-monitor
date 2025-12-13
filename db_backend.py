@@ -4,6 +4,7 @@ import sqlite3
 import time
 from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple
+from loguru import logger
 
 
 class DatabaseBackend(ABC):
@@ -46,6 +47,13 @@ class DatabaseBackend(ABC):
                                 ping_ws: Optional[float] = None,
                                 ping_v3: Optional[float] = None) -> None:
         """update executed_in, commited_in, streaming_to_v3_lag, ping_ws, ping_v3 from blockchain data"""
+        pass
+    
+    @abstractmethod
+    def update_session_stats_times(self, addr: str, utime: float,
+                                   shard_metrics: Optional[dict],
+                                   mc_metrics: Optional[dict]) -> None:
+        """update session_stats metrics (till_* fields)"""
         pass
     
     @abstractmethod
@@ -98,9 +106,47 @@ class SQLiteBackend(DatabaseBackend):
                 streaming_to_v3_lag REAL,
                 ping_ws REAL,
                 ping_v3 REAL,
+                till_started_shard_block REAL,
+                till_collated_shard REAL,
+                till_got_submit_shard REAL,
+                till_validated_shard REAL,
+                till_approved_66pct_shard REAL,
+                till_signed_66pct_shard REAL,
+                till_started_mc_block REAL,
+                till_collated_mc REAL,
+                till_got_submit_mc REAL,
+                till_validated_mc REAL,
+                till_approved_66pct_mc REAL,
+                till_signed_66pct_mc REAL,
                 PRIMARY KEY (addr, utime)
             )
         """)
+        self._ensure_session_stats_columns()
+        self.connection.commit()
+    
+    def _ensure_session_stats_columns(self) -> None:
+        """add new session_stats columns if db already exists"""
+        cols = {row[1] for row in self.cursor.execute("PRAGMA table_info(txs)").fetchall()}
+        new_cols = [
+            "till_started_shard_block",
+            "till_collated_shard",
+            "till_got_submit_shard",
+            "till_validated_shard",
+            "till_approved_66pct_shard",
+            "till_signed_66pct_shard",
+            "till_started_mc_block",
+            "till_collated_mc",
+            "till_got_submit_mc",
+            "till_validated_mc",
+            "till_approved_66pct_mc",
+            "till_signed_66pct_mc",
+        ]
+        for col in new_cols:
+            if col not in cols:
+                try:
+                    self.cursor.execute(f"ALTER TABLE txs ADD COLUMN {col} REAL")
+                except Exception as e:
+                    logger.warning(f"failed to add column {col}: {e}")
         self.connection.commit()
     
     def add_new_tx(self, addr: str, utime: float, msghash: str, sendboc_took: Optional[float]) -> None:
@@ -199,6 +245,59 @@ class SQLiteBackend(DatabaseBackend):
             updates.append("ping_v3 = ?")
             params.append(ping_v3)
         
+        if updates:
+            params.extend([addr, utime])
+            self.cursor.execute(
+                f"UPDATE txs SET {', '.join(updates)} WHERE addr = ? AND utime = ?",
+                params,
+            )
+            self.connection.commit()
+    
+    def update_session_stats_times(self, addr: str, utime: float,
+                                   shard_metrics: Optional[dict],
+                                   mc_metrics: Optional[dict]) -> None:
+        def delta(metrics: Optional[dict], key: str) -> Optional[float]:
+            if not metrics:
+                return None
+            val = metrics.get(key)
+            if val is None:
+                return None
+            try:
+                val_f = float(val)
+            except Exception:
+                return None
+            if val_f < 0:
+                return None
+            return val_f - utime
+        
+        updates = []
+        params = []
+        shard_map = {
+            "till_started_shard_block": "got_block_at",
+            "till_collated_shard": "collated_at",
+            "till_got_submit_shard": "got_submit_at",
+            "till_validated_shard": "validated_at",
+            "till_approved_66pct_shard": "approved_66pct_at",
+            "till_signed_66pct_shard": "signed_66pct_at",
+        }
+        mc_map = {
+            "till_started_mc_block": "got_block_at",
+            "till_collated_mc": "collated_at",
+            "till_got_submit_mc": "got_submit_at",
+            "till_validated_mc": "validated_at",
+            "till_approved_66pct_mc": "approved_66pct_at",
+            "till_signed_66pct_mc": "signed_66pct_at",
+        }
+        for col, key in shard_map.items():
+            d = delta(shard_metrics, key)
+            if d is not None:
+                updates.append(f"{col} = CASE WHEN {col} IS NULL THEN ? ELSE {col} END")
+                params.append(d)
+        for col, key in mc_map.items():
+            d = delta(mc_metrics, key)
+            if d is not None:
+                updates.append(f"{col} = CASE WHEN {col} IS NULL THEN ? ELSE {col} END")
+                params.append(d)
         if updates:
             params.extend([addr, utime])
             self.cursor.execute(
@@ -323,10 +422,45 @@ class ClickHouseBackend(DatabaseBackend):
                 streaming_to_v3_lag Nullable(Float64),
                 ping_ws Nullable(Float64),
                 ping_v3 Nullable(Float64),
+                till_started_shard_block Nullable(Float64),
+                till_collated_shard Nullable(Float64),
+                till_got_submit_shard Nullable(Float64),
+                till_validated_shard Nullable(Float64),
+                till_approved_66pct_shard Nullable(Float64),
+                till_signed_66pct_shard Nullable(Float64),
+                till_started_mc_block Nullable(Float64),
+                till_collated_mc Nullable(Float64),
+                till_got_submit_mc Nullable(Float64),
+                till_validated_mc Nullable(Float64),
+                till_approved_66pct_mc Nullable(Float64),
+                till_signed_66pct_mc Nullable(Float64),
                 updated_at DateTime DEFAULT now()
             ) ENGINE = ReplacingMergeTree(updated_at)
             ORDER BY (addr, utime)
         """)
+        self._ensure_session_stats_columns()
+    
+    def _ensure_session_stats_columns(self) -> None:
+        """add session_stats columns for existing tables"""
+        columns = {
+            "till_started_shard_block": "Nullable(Float64)",
+            "till_collated_shard": "Nullable(Float64)",
+            "till_got_submit_shard": "Nullable(Float64)",
+            "till_validated_shard": "Nullable(Float64)",
+            "till_approved_66pct_shard": "Nullable(Float64)",
+            "till_signed_66pct_shard": "Nullable(Float64)",
+            "till_started_mc_block": "Nullable(Float64)",
+            "till_collated_mc": "Nullable(Float64)",
+            "till_got_submit_mc": "Nullable(Float64)",
+            "till_validated_mc": "Nullable(Float64)",
+            "till_approved_66pct_mc": "Nullable(Float64)",
+            "till_signed_66pct_mc": "Nullable(Float64)",
+        }
+        for col, col_type in columns.items():
+            try:
+                self.client.execute(f"ALTER TABLE {self.table} ADD COLUMN IF NOT EXISTS {col} {col_type}")
+            except Exception as e:
+                logger.warning(f"clickhouse alter add column {col} failed: {e}")
     
     def add_new_tx(self, addr: str, utime: float, msghash: str, sendboc_took: Optional[float]) -> None:
         self.client.execute(
@@ -364,7 +498,11 @@ class ClickHouseBackend(DatabaseBackend):
         rows = self.client.execute(
             f"""SELECT msghash, is_found, executed_in, found_in, commited_in, sendboc_took,
                        pending_tx_in, pending_action_in, confirmed_tx_in, confirmed_action_in,
-                       finalized_tx_in, finalized_action_in, streaming_to_v3_lag, ping_ws, ping_v3
+                       finalized_tx_in, finalized_action_in, streaming_to_v3_lag, ping_ws, ping_v3,
+                       till_started_shard_block, till_collated_shard, till_got_submit_shard,
+                       till_validated_shard, till_approved_66pct_shard, till_signed_66pct_shard,
+                       till_started_mc_block, till_collated_mc, till_got_submit_mc,
+                       till_validated_mc, till_approved_66pct_mc, till_signed_66pct_mc
                 FROM {self.table} FINAL WHERE addr = %(addr)s AND utime = %(utime)s""",
             {"addr": addr, "utime": utime},
         )
@@ -378,6 +516,12 @@ class ClickHouseBackend(DatabaseBackend):
             "confirmed_tx_in": row[8], "confirmed_action_in": row[9],
             "finalized_tx_in": row[10], "finalized_action_in": row[11],
             "streaming_to_v3_lag": row[12], "ping_ws": row[13], "ping_v3": row[14],
+            "till_started_shard_block": row[15], "till_collated_shard": row[16],
+            "till_got_submit_shard": row[17], "till_validated_shard": row[18],
+            "till_approved_66pct_shard": row[19], "till_signed_66pct_shard": row[20],
+            "till_started_mc_block": row[21], "till_collated_mc": row[22],
+            "till_got_submit_mc": row[23], "till_validated_mc": row[24],
+            "till_approved_66pct_mc": row[25], "till_signed_66pct_mc": row[26],
         }
     
     def update_streaming_field(self, addr: str, utime: float, msghash: str,
@@ -430,6 +574,18 @@ class ClickHouseBackend(DatabaseBackend):
             "streaming_to_v3_lag": current.get("streaming_to_v3_lag") if current else None,
             "ping_ws": current.get("ping_ws") if current else None,
             "ping_v3": current.get("ping_v3") if current else None,
+            "till_started_shard_block": current.get("till_started_shard_block") if current else None,
+            "till_collated_shard": current.get("till_collated_shard") if current else None,
+            "till_got_submit_shard": current.get("till_got_submit_shard") if current else None,
+            "till_validated_shard": current.get("till_validated_shard") if current else None,
+            "till_approved_66pct_shard": current.get("till_approved_66pct_shard") if current else None,
+            "till_signed_66pct_shard": current.get("till_signed_66pct_shard") if current else None,
+            "till_started_mc_block": current.get("till_started_mc_block") if current else None,
+            "till_collated_mc": current.get("till_collated_mc") if current else None,
+            "till_got_submit_mc": current.get("till_got_submit_mc") if current else None,
+            "till_validated_mc": current.get("till_validated_mc") if current else None,
+            "till_approved_66pct_mc": current.get("till_approved_66pct_mc") if current else None,
+            "till_signed_66pct_mc": current.get("till_signed_66pct_mc") if current else None,
         }
         new_row[field] = value
         
@@ -444,13 +600,21 @@ class ClickHouseBackend(DatabaseBackend):
             f"""INSERT INTO {self.table} 
                 (addr, utime, msghash, is_found, executed_in, found_in, commited_in, sendboc_took,
                  pending_tx_in, pending_action_in, confirmed_tx_in, confirmed_action_in,
-                 finalized_tx_in, finalized_action_in, streaming_to_v3_lag, ping_ws, ping_v3) VALUES""",
+                 finalized_tx_in, finalized_action_in, streaming_to_v3_lag, ping_ws, ping_v3,
+                 till_started_shard_block, till_collated_shard, till_got_submit_shard,
+                 till_validated_shard, till_approved_66pct_shard, till_signed_66pct_shard,
+                 till_started_mc_block, till_collated_mc, till_got_submit_mc,
+                 till_validated_mc, till_approved_66pct_mc, till_signed_66pct_mc) VALUES""",
             [(new_row["addr"], new_row["utime"], new_row["msghash"], new_row["is_found"],
               new_row["executed_in"], new_row["found_in"], new_row["commited_in"], new_row["sendboc_took"],
               new_row["pending_tx_in"], new_row["pending_action_in"],
               new_row["confirmed_tx_in"], new_row["confirmed_action_in"],
               new_row["finalized_tx_in"], new_row["finalized_action_in"], new_row["streaming_to_v3_lag"],
-              new_row["ping_ws"], new_row["ping_v3"])],
+              new_row["ping_ws"], new_row["ping_v3"],
+              new_row["till_started_shard_block"], new_row["till_collated_shard"], new_row["till_got_submit_shard"],
+              new_row["till_validated_shard"], new_row["till_approved_66pct_shard"], new_row["till_signed_66pct_shard"],
+              new_row["till_started_mc_block"], new_row["till_collated_mc"], new_row["till_got_submit_mc"],
+              new_row["till_validated_mc"], new_row["till_approved_66pct_mc"], new_row["till_signed_66pct_mc"])],
         )
         return True, fixed_count
     
@@ -461,13 +625,23 @@ class ClickHouseBackend(DatabaseBackend):
                 f"""INSERT INTO {self.table} 
                     (addr, utime, msghash, is_found, executed_in, found_in, commited_in, sendboc_took,
                      pending_tx_in, pending_action_in, confirmed_tx_in, confirmed_action_in,
-                     finalized_tx_in, finalized_action_in, streaming_to_v3_lag, ping_ws, ping_v3) VALUES""",
+                     finalized_tx_in, finalized_action_in, streaming_to_v3_lag, ping_ws, ping_v3,
+                     till_started_shard_block, till_collated_shard, till_got_submit_shard,
+                     till_validated_shard, till_approved_66pct_shard, till_signed_66pct_shard,
+                     till_started_mc_block, till_collated_mc, till_got_submit_mc,
+                     till_validated_mc, till_approved_66pct_mc, till_signed_66pct_mc) VALUES""",
                 [(addr, utime, current["msghash"], 1,
                   current["executed_in"], current["found_in"], current["commited_in"], current["sendboc_took"],
                   current["pending_tx_in"], current["pending_action_in"],
                   current["confirmed_tx_in"], current["confirmed_action_in"],
                   current["finalized_tx_in"], current["finalized_action_in"], current["streaming_to_v3_lag"],
-                  current["ping_ws"], current["ping_v3"])],
+                  current["ping_ws"], current["ping_v3"],
+                  current.get("till_started_shard_block"), current.get("till_collated_shard"),
+                  current.get("till_got_submit_shard"), current.get("till_validated_shard"),
+                  current.get("till_approved_66pct_shard"), current.get("till_signed_66pct_shard"),
+                  current.get("till_started_mc_block"), current.get("till_collated_mc"),
+                  current.get("till_got_submit_mc"), current.get("till_validated_mc"),
+                  current.get("till_approved_66pct_mc"), current.get("till_signed_66pct_mc"))],
             )
     
     def update_blockchain_times(self, addr: str, utime: float,
@@ -486,14 +660,96 @@ class ClickHouseBackend(DatabaseBackend):
                 f"""INSERT INTO {self.table} 
                     (addr, utime, msghash, is_found, executed_in, found_in, commited_in, sendboc_took,
                      pending_tx_in, pending_action_in, confirmed_tx_in, confirmed_action_in,
-                     finalized_tx_in, finalized_action_in, streaming_to_v3_lag, ping_ws, ping_v3) VALUES""",
+                     finalized_tx_in, finalized_action_in, streaming_to_v3_lag, ping_ws, ping_v3,
+                     till_started_shard_block, till_collated_shard, till_got_submit_shard,
+                     till_validated_shard, till_approved_66pct_shard, till_signed_66pct_shard,
+                     till_started_mc_block, till_collated_mc, till_got_submit_mc,
+                     till_validated_mc, till_approved_66pct_mc, till_signed_66pct_mc) VALUES""",
                 [(addr, utime, current["msghash"], current["is_found"],
                   new_executed, current["found_in"], new_commited, current["sendboc_took"],
                   current["pending_tx_in"], current["pending_action_in"],
                   current["confirmed_tx_in"], current["confirmed_action_in"],
                   current["finalized_tx_in"], current["finalized_action_in"], new_lag,
-                  new_ping_ws, new_ping_v3)],
+                  new_ping_ws, new_ping_v3,
+                  current.get("till_started_shard_block"), current.get("till_collated_shard"),
+                  current.get("till_got_submit_shard"), current.get("till_validated_shard"),
+                  current.get("till_approved_66pct_shard"), current.get("till_signed_66pct_shard"),
+                  current.get("till_started_mc_block"), current.get("till_collated_mc"),
+                  current.get("till_got_submit_mc"), current.get("till_validated_mc"),
+                  current.get("till_approved_66pct_mc"), current.get("till_signed_66pct_mc"))],
             )
+    
+    def update_session_stats_times(self, addr: str, utime: float,
+                                   shard_metrics: Optional[dict],
+                                   mc_metrics: Optional[dict]) -> None:
+        current = self._get_current_row(addr, utime)
+        if not current:
+            return
+        
+        def delta(metrics: Optional[dict], key: str) -> Optional[float]:
+            if not metrics:
+                return None
+            val = metrics.get(key)
+            if val is None:
+                return None
+            try:
+                val_f = float(val)
+            except Exception:
+                return None
+            if val_f < 0:
+                return None
+            return val_f - utime
+        
+        shard_map = {
+            "till_started_shard_block": "got_block_at",
+            "till_collated_shard": "collated_at",
+            "till_got_submit_shard": "got_submit_at",
+            "till_validated_shard": "validated_at",
+            "till_approved_66pct_shard": "approved_66pct_at",
+            "till_signed_66pct_shard": "signed_66pct_at",
+        }
+        mc_map = {
+            "till_started_mc_block": "got_block_at",
+            "till_collated_mc": "collated_at",
+            "till_got_submit_mc": "got_submit_at",
+            "till_validated_mc": "validated_at",
+            "till_approved_66pct_mc": "approved_66pct_at",
+            "till_signed_66pct_mc": "signed_66pct_at",
+        }
+        
+        new_row = current.copy()
+        new_row["addr"] = addr
+        new_row["utime"] = utime
+        
+        for col, key in shard_map.items():
+            d = delta(shard_metrics, key)
+            if d is not None and new_row.get(col) is None:
+                new_row[col] = d
+        for col, key in mc_map.items():
+            d = delta(mc_metrics, key)
+            if d is not None and new_row.get(col) is None:
+                new_row[col] = d
+        
+        self.client.execute(
+            f"""INSERT INTO {self.table} 
+                (addr, utime, msghash, is_found, executed_in, found_in, commited_in, sendboc_took,
+                 pending_tx_in, pending_action_in, confirmed_tx_in, confirmed_action_in,
+                 finalized_tx_in, finalized_action_in, streaming_to_v3_lag, ping_ws, ping_v3,
+                 till_started_shard_block, till_collated_shard, till_got_submit_shard,
+                 till_validated_shard, till_approved_66pct_shard, till_signed_66pct_shard,
+                 till_started_mc_block, till_collated_mc, till_got_submit_mc,
+                 till_validated_mc, till_approved_66pct_mc, till_signed_66pct_mc) VALUES""",
+            [(addr, utime, new_row["msghash"], new_row["is_found"],
+              new_row.get("executed_in"), new_row.get("found_in"), new_row.get("commited_in"), new_row.get("sendboc_took"),
+              new_row.get("pending_tx_in"), new_row.get("pending_action_in"),
+              new_row.get("confirmed_tx_in"), new_row.get("confirmed_action_in"),
+              new_row.get("finalized_tx_in"), new_row.get("finalized_action_in"), new_row.get("streaming_to_v3_lag"),
+              new_row.get("ping_ws"), new_row.get("ping_v3"),
+              new_row.get("till_started_shard_block"), new_row.get("till_collated_shard"), new_row.get("till_got_submit_shard"),
+              new_row.get("till_validated_shard"), new_row.get("till_approved_66pct_shard"), new_row.get("till_signed_66pct_shard"),
+              new_row.get("till_started_mc_block"), new_row.get("till_collated_mc"), new_row.get("till_got_submit_mc"),
+              new_row.get("till_validated_mc"), new_row.get("till_approved_66pct_mc"), new_row.get("till_signed_66pct_mc"))],
+        )
     
     def get_found_hashes(self, since: float) -> set:
         result = self.client.execute(

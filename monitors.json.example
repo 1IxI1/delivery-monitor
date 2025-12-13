@@ -9,6 +9,20 @@
     "clickhouse_password": "",
     "clickhouse_database_mainnet": "dm_mainnet",
     "clickhouse_database_testnet": "dm_testnet",
+    "session_stats_enabled": false,
+    "session_stats_host": "localhost",
+    "session_stats_port": 9000,
+    "session_stats_user": "user",
+    "session_stats_password": "abcde",
+    "session_stats_database_testnet": "session_stats_testnet_v2",
+    "session_stats_validator_adnls": [
+        "9835BBF9637BD12A50B1F5F90DEB4E0C53A95BACE3081C7B7037FA13EAC48A92",
+        "794993420B1B72C6F73B26C577FEAF63936B2AABF4548A2C1B7D2C9028C3E681",
+        "151CDD00CCA9C3A4A2D7E4FED39DACBF3A0738AF17A892CFF2854DDA5A112718",
+        "63D851287431C3B28EC2CBF29ADCB05E5135A6FEEE32CDFF96CE99ED6BF7C73C",
+        "A93E500F133458B844AAAD0EFA55C284B057F555FD6F60A0A0649808E82734C7",
+        "255801D2220221957B7E954C908E69DD779D2D7A67882C177B589C238D605E20"
+    ],
     "monitors": [
         {
             "enabled": true,

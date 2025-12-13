@@ -14,6 +14,7 @@ filename = "monitors.json"
 _db_config_base: dict = {}
 _valid_until_timeout: int = 40
 _send_interval: int = 40
+_session_stats_config_base: dict = {}
 
 
 def get_db_config(is_testnet: bool) -> dict:
@@ -25,6 +26,11 @@ def get_db_config(is_testnet: bool) -> dict:
         else:
             config["clickhouse_database"] = config.get("clickhouse_database_mainnet", "default")
     return config
+    
+
+def get_session_stats_config() -> dict:
+    """get session_stats config (shared)"""
+    return _session_stats_config_base.copy()
 
 
 async def start_monitor(monitor_params: dict):
@@ -86,19 +92,21 @@ async def start_monitor(monitor_params: dict):
 
     # get db config with correct database for this monitor's network
     db_config = get_db_config(is_testnet)
+    session_stats_config = get_session_stats_config()
 
     monitor = TransactionsMonitor(
         client, wallets_path, dbname, db_config=db_config,
         dbname_second=dbname_second, to_send=to_send,
         sender_client=monitor_sender_client, with_state_init=with_state_init,
         extra_msg_boc=extra_msg_boc, target_action_type=target_action_type,
-        valid_until_timeout=_valid_until_timeout, send_interval=_send_interval
+        valid_until_timeout=_valid_until_timeout, send_interval=_send_interval,
+        session_stats_config=session_stats_config, is_testnet=is_testnet
     )
     await monitor.start_worker()
 
 
 async def start_all():
-    global _db_config_base, _valid_until_timeout, _send_interval
+    global _db_config_base, _valid_until_timeout, _send_interval, _session_stats_config_base
     
     with open(filename, "r") as f:
         data = json.load(f)
@@ -116,6 +124,17 @@ async def start_all():
         "clickhouse_password": data.get("clickhouse_password", ""),
         "clickhouse_database_mainnet": data.get("clickhouse_database_mainnet", "default"),
         "clickhouse_database_testnet": data.get("clickhouse_database_testnet", "default"),
+    }
+    
+    _session_stats_config_base = {
+        "session_stats_enabled": data.get("session_stats_enabled", False),
+        "session_stats_host": data.get("session_stats_host", "localhost"),
+        "session_stats_port": data.get("session_stats_port", 9000),
+        "session_stats_user": data.get("session_stats_user", "default"),
+        "session_stats_password": data.get("session_stats_password", ""),
+        "session_stats_database_testnet": data.get("session_stats_database_testnet", ""),
+        "session_stats_database_mainnet": data.get("session_stats_database_mainnet", ""),
+        "session_stats_validator_adnls": data.get("session_stats_validator_adnls", []),
     }
     
     # if server run - log to file.

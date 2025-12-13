@@ -25,3 +25,4 @@ test.py
 dev/
 .DS_Store
 monitors-mainnet.json
+.cursor/

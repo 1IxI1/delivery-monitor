@@ -6,7 +6,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union, cast
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -73,6 +73,8 @@ class TransactionsMonitor:
         target_action_type: str = "unknown",
         valid_until_timeout: int = DEFAULT_VALID_UNTIL_TIMEOUT,
         send_interval: int = DEFAULT_SEND_INTERVAL,
+        session_stats_config: Optional[dict] = None,
+        is_testnet: bool = False,
     ):
         self.dbname = dbname
         self.dbname_second = dbname_second
@@ -82,6 +84,8 @@ class TransactionsMonitor:
         self.target_action_type = target_action_type
         self.valid_until_timeout = valid_until_timeout
         self.send_interval = send_interval
+        self.session_stats_config = session_stats_config or {}
+        self.is_testnet = is_testnet
         
         # create db backend from config
         self.db_config = db_config or {}
@@ -198,7 +202,130 @@ class TransactionsMonitor:
                 logger.warning(f"{self.dbstr}: failed to get mc block {seqno}: {e}")
         logger.error(f"{self.dbstr}: mc block {seqno} not found after 100 attempts")
         return None
+    
+    async def query_session_stats(self, workchain: int, shard: str, seqno: int) -> Optional[dict]:
+        """query session_stats ClickHouse with polling"""
+        cfg = self.session_stats_config or {}
+        if not cfg.get("session_stats_enabled"):
+            return None
+        
+        validators = cfg.get("session_stats_validator_adnls") or []
+        if not validators:
+            return None
+        
+        database = cfg.get("session_stats_database_testnet") if self.is_testnet else cfg.get(
+            "session_stats_database_mainnet", cfg.get("session_stats_database_testnet")
+        )
+        if not database:
+            return None
+        
+        shard_int = int(shard, 16)
+        if shard_int >= 2**63:
+            shard_int = shard_int - 2**64 # Int64 problems in ClickHouse
 
+        query = f"""
+            SELECT created_timestamp, validator_adnl, gen_utime, got_block_at, collated_at,
+                   got_submit_at, validated_at, approved_66pct_at, signed_66pct_at
+            FROM {database}.producers
+            WHERE block_seqno = %(seqno)s
+              AND block_workchain = %(wc)s
+              AND block_shard = %(shard)s
+              AND validator_adnl IN %(validators)s
+              AND got_block_at IS NOT NULL
+            ORDER BY collated_at DESC, gen_utime DESC
+            LIMIT 1
+        """
+        
+        def run_query() -> Optional[dict]:
+            from clickhouse_driver import Client
+            client = Client(
+                host=cfg.get("session_stats_host", "localhost"),
+                port=cfg.get("session_stats_port", 9000),
+                user=cfg.get("session_stats_user", "default"),
+                password=cfg.get("session_stats_password", ""),
+                database=database,
+            )
+            try:
+                for _ in range(7):
+                    logger.debug(f"{self.dbstr}: session_stats query attempt {_ + 1} of 7 for shard {shard_int} workchain {workchain} seqno {seqno}")
+                    rows = client.execute(
+                        query,
+                        {
+                            "seqno": int(seqno),
+                            "wc": int(workchain),
+                            "shard": shard_int,
+                            "validators": tuple(validators),
+                        },
+                    )
+                    if isinstance(rows, list) and rows:
+                        logger.debug(f"{self.dbstr}: session_stats query successful for shard {shard_int} workchain {workchain} seqno {seqno}")
+                        row = rows[0]
+                        return {
+                            "created_timestamp": row[0],
+                            "validator_adnl": row[1],
+                            "gen_utime": row[2],
+                            "got_block_at": row[3],
+                            "collated_at": row[4],
+                            "got_submit_at": row[5],
+                            "validated_at": row[6],
+                            "approved_66pct_at": row[7],
+                            "signed_66pct_at": row[8],
+                        }
+            except Exception as e:
+                logger.warning(f"{self.dbstr}: session_stats query failed: {e}")
+            finally:
+                try:
+                    client.disconnect()
+                except Exception:
+                    pass
+            return None
+        
+        return await asyncio.to_thread(run_query)
+
+    @dataclass
+    class BlockRef:
+        workchain: int
+        shard: str
+        seqno: int
+
+    @dataclass
+    class TxBlockRefs:
+        block_ref: 'TransactionsMonitor.BlockRef'
+        mc_block_seqno: int
+
+    async def get_tx_block_refs(self, tx_hash: str) -> Optional[TxBlockRefs]:
+        """fetch block refs for tx hash from v3 transactions endpoint"""
+        if not self.sender_client:
+            logger.warning(f"{self.dbstr}: session_stats skip (no sender_client)")
+            return None
+        try:
+            resp = await self.sender_client.get_transactions_by_hash(tx_hash)
+            txs = resp.get("transactions") if isinstance(resp, dict) else None
+            if not txs:
+                logger.warning(f"{self.dbstr}: session_stats tx {tx_hash}... not found in v3")
+                return None
+            tx = txs[0]
+            block_ref_dict = tx.get("block_ref", None)
+            if not block_ref_dict or not all(k in block_ref_dict for k in ("workchain", "shard", "seqno")):
+                logger.warning(f"{self.dbstr}: session_stats tx {tx_hash}... no block ref")
+                return None
+            block_ref = self.BlockRef(
+                workchain=block_ref_dict["workchain"],
+                shard=block_ref_dict["shard"],
+                seqno=block_ref_dict["seqno"]
+            )
+            mc_block_seqno = tx.get("mc_block_seqno", None)
+            if not mc_block_seqno:
+                logger.warning(f"{self.dbstr}: session_stats tx {tx_hash}... no mc block seqno")
+                return None
+            return self.TxBlockRefs(
+                block_ref=block_ref,
+                mc_block_seqno=mc_block_seqno
+            )
+        except Exception as e:
+            logger.warning(f"{self.dbstr}: session_stats tx lookup failed: {e}")
+            return None
+        
     def insert_found_msg(
         self, msg_info: MsgInfo, blockutime: float, found_at: float, commited_at: float
     ) -> None:
@@ -416,6 +543,30 @@ class TransactionsMonitor:
                             if msg_tracking[m.msghash]["finalized_tx"] and msg_tracking[m.msghash]["finalized_action"]:
                                 self.mark_streaming_found(m)
                                 logger.success(f"{self.dbstr}: Found finalized tx {m.msghash}")
+                                
+                            # session stats polling after DB updates/marking
+                            if field == "finalized_action_in" and matched_action and self.session_stats_config.get("session_stats_enabled"):
+                                tx_hashes = matched_action.get("transactions") or []
+                                tx_hash = tx_hashes[-1] if tx_hashes else None
+                                if not tx_hash:
+                                    logger.info(f"{self.dbstr}: session_stats skip (no tx hash)")
+                                elif not self.sender_client:
+                                    logger.info(f"{self.dbstr}: session_stats skip (no sender_client)")
+                                else:
+                                    tx_refs = await self.get_tx_block_refs(tx_hash)
+                                    shard_metrics = None
+                                    mc_metrics = None
+                                    if tx_refs:
+                                        shard_ref = tx_refs.block_ref
+                                        if shard_ref is not None:
+                                            shard_metrics = await self.query_session_stats(shard_ref.workchain, shard_ref.shard, shard_ref.seqno)
+                                        if tx_refs.mc_block_seqno:
+                                            mc_metrics = await self.query_session_stats(-1, "8000000000000000", tx_refs.mc_block_seqno)
+                                    if shard_metrics or mc_metrics:
+                                        target_db.update_session_stats_times(m.addr, m.utime, shard_metrics, mc_metrics)
+                                        logger.success(f"{self.dbstr}: session_stats stored (shard={'yes' if shard_metrics else 'no'}, mc={'yes' if mc_metrics else 'no'})")
+                                    else:
+                                        logger.info(f"{self.dbstr}: session_stats no data within timeout")
                 
                 # listen for events
                 await self.client.listen(on_event)
