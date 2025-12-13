@@ -246,8 +246,8 @@ class TransactionsMonitor:
                 database=database,
             )
             try:
-                for _ in range(30):
-                    logger.debug(f"{self.dbstr}: session_stats query attempt {_ + 1} of 30 for ({workchain}, {shard_int}, {seqno})")
+                for _ in range(5):
+                    logger.debug(f"{self.dbstr}: session_stats query attempt {_ + 1} of 5 for ({workchain}, {shard_int}, {seqno})")
                     rows = client.execute(
                         query,
                         {
