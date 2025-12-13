@@ -559,10 +559,40 @@ class TransactionsMonitor:
                                     mc_metrics = None
                                     if tx_refs:
                                         shard_ref = tx_refs.block_ref
+                                        tasks = []
                                         if shard_ref is not None:
-                                            shard_metrics = await self.query_session_stats(shard_ref.workchain, shard_ref.shard, shard_ref.seqno)
+                                            tasks.append(
+                                                (
+                                                    "shard",
+                                                    asyncio.create_task(
+                                                        self.query_session_stats(
+                                                            shard_ref.workchain,
+                                                            shard_ref.shard,
+                                                            shard_ref.seqno,
+                                                        )
+                                                    ),
+                                                )
+                                            )
                                         if tx_refs.mc_block_seqno:
-                                            mc_metrics = await self.query_session_stats(-1, "8000000000000000", tx_refs.mc_block_seqno)
+                                            tasks.append(
+                                                (
+                                                    "mc",
+                                                    asyncio.create_task(
+                                                        self.query_session_stats(
+                                                            -1,
+                                                            "8000000000000000",
+                                                            tx_refs.mc_block_seqno,
+                                                        )
+                                                    ),
+                                                )
+                                            )
+                                        if tasks:
+                                            results = await asyncio.gather(*(t for _, t in tasks))
+                                            for (label, _), res in zip(tasks, results):
+                                                if label == "shard":
+                                                    shard_metrics = res
+                                                elif label == "mc":
+                                                    mc_metrics = res
                                     if shard_metrics or mc_metrics:
                                         target_db.update_session_stats_times(m.addr, m.utime, shard_metrics, mc_metrics)
                                         logger.success(f"{self.dbstr}: session_stats stored (shard={'yes' if shard_metrics else 'no'}, mc={'yes' if mc_metrics else 'no'})")
@@ -767,7 +797,7 @@ class TransactionsMonitor:
         while self.sent_count < (self.to_send or 100000000):  # 400 years by default
             for wdata in self.wallets:
                 try:
-                    await self.prepare_and_send_to_wallet(wdata)
+                    await self.prepare_and_send_to_wallet(wdata)  # type: ignore[misc]
                 except Exception as e:
                     logger.warning(
                         f"{self.dbstr}: Failed to send tx to wallet "
