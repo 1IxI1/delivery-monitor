@@ -246,8 +246,8 @@ class TransactionsMonitor:
                 database=database,
             )
             try:
-                for _ in range(10):
-                    logger.debug(f"{self.dbstr}: session_stats query attempt {_ + 1} of 10 for shard {shard_int} workchain {workchain} seqno {seqno}")
+                for _ in range(30):
+                    logger.debug(f"{self.dbstr}: session_stats query attempt {_ + 1} of 30 for shard {shard_int} workchain {workchain} seqno {seqno}")
                     rows = client.execute(
                         query,
                         {
@@ -271,7 +271,7 @@ class TransactionsMonitor:
                             "approved_66pct_at": row[7],
                             "signed_66pct_at": row[8],
                         }
-                    time.sleep(2)
+                    time.sleep(4)
             except Exception as e:
                 logger.warning(f"{self.dbstr}: session_stats query failed: {e}")
             finally:
