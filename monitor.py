@@ -246,8 +246,8 @@ class TransactionsMonitor:
                 database=database,
             )
             try:
-                for _ in range(5):
-                    logger.debug(f"{self.dbstr}: session_stats query attempt {_ + 1} of 5 for ({workchain}, {shard_int}, {seqno})")
+                for _ in range(2):
+                    logger.debug(f"{self.dbstr}: session_stats query attempt {_ + 1} of 2 for ({workchain}, {shard_int}, {seqno})")
                     rows = client.execute(
                         query,
                         {
@@ -271,7 +271,7 @@ class TransactionsMonitor:
                             "approved_66pct_at": row[7],
                             "signed_66pct_at": row[8],
                         }
-                    time.sleep(4)
+                    time.sleep(10)
             except Exception as e:
                 logger.warning(f"{self.dbstr}: session_stats query failed: {e}")
             finally:
@@ -286,7 +286,7 @@ class TransactionsMonitor:
     async def _background_session_stats(self, tx_hash: str, addr: str, utime: float) -> None:
         """run session_stats polling without blocking WS handler"""
         try:
-            await asyncio.sleep(90)
+            await asyncio.sleep(120)
             tx_refs = await self.get_tx_block_refs(tx_hash)
             shard_metrics = None
             mc_metrics = None
