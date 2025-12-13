@@ -286,6 +286,7 @@ class TransactionsMonitor:
     async def _background_session_stats(self, tx_hash: str, addr: str, utime: float) -> None:
         """run session_stats polling without blocking WS handler"""
         try:
+            await asyncio.sleep(90)
             tx_refs = await self.get_tx_block_refs(tx_hash)
             shard_metrics = None
             mc_metrics = None
