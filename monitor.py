@@ -283,6 +283,59 @@ class TransactionsMonitor:
         
         return await asyncio.to_thread(run_query)
 
+    async def _background_session_stats(self, tx_hash: str, addr: str, utime: float) -> None:
+        """run session_stats polling without blocking WS handler"""
+        try:
+            tx_refs = await self.get_tx_block_refs(tx_hash)
+            shard_metrics = None
+            mc_metrics = None
+            if tx_refs:
+                shard_ref = tx_refs.block_ref
+                tasks = []
+                if shard_ref is not None:
+                    tasks.append(
+                        (
+                            "shard",
+                            asyncio.create_task(
+                                self.query_session_stats(
+                                    shard_ref.workchain,
+                                    shard_ref.shard,
+                                    shard_ref.seqno,
+                                )
+                            ),
+                        )
+                    )
+                if tx_refs.mc_block_seqno:
+                    tasks.append(
+                        (
+                            "mc",
+                            asyncio.create_task(
+                                self.query_session_stats(
+                                    -1,
+                                    "8000000000000000",
+                                    tx_refs.mc_block_seqno,
+                                )
+                            ),
+                        )
+                    )
+                if tasks:
+                    results = await asyncio.gather(*(t for _, t in tasks))
+                    for (label, _), res in zip(tasks, results):
+                        if label == "shard":
+                            shard_metrics = res
+                        elif label == "mc":
+                            mc_metrics = res
+            target_db = self.db_second if self.db_second else self.db
+            if shard_metrics or mc_metrics:
+                target_db.update_session_stats_times(addr, utime, shard_metrics, mc_metrics)
+                logger.success(
+                    f"{self.dbstr}: session_stats stored (shard={'yes' if shard_metrics else 'no'}, mc={'yes' if mc_metrics else 'no'})"
+                )
+            else:
+                logger.info(f"{self.dbstr}: session_stats no data within timeout")
+        except Exception as e:
+            logger.warning(f"{self.dbstr}: session_stats background failed: {e}")
+
     @dataclass
     class BlockRef:
         workchain: int
@@ -545,8 +598,12 @@ class TransactionsMonitor:
                                 self.mark_streaming_found(m)
                                 logger.success(f"{self.dbstr}: Found finalized tx {m.msghash}")
                                 
-                            # session stats polling after DB updates/marking
-                            if field == "finalized_action_in" and matched_action and self.session_stats_config.get("session_stats_enabled"):
+                            # session stats polling after DB updates/marking in background
+                            if (
+                                field == "finalized_action_in"
+                                and matched_action
+                                and self.session_stats_config.get("session_stats_enabled")
+                            ):
                                 tx_hashes = matched_action.get("transactions") or []
                                 tx_hash = tx_hashes[-1] if tx_hashes else None
                                 if not tx_hash:
@@ -554,50 +611,13 @@ class TransactionsMonitor:
                                 elif not self.sender_client:
                                     logger.info(f"{self.dbstr}: session_stats skip (no sender_client)")
                                 else:
-                                    tx_refs = await self.get_tx_block_refs(tx_hash)
-                                    shard_metrics = None
-                                    mc_metrics = None
-                                    if tx_refs:
-                                        shard_ref = tx_refs.block_ref
-                                        tasks = []
-                                        if shard_ref is not None:
-                                            tasks.append(
-                                                (
-                                                    "shard",
-                                                    asyncio.create_task(
-                                                        self.query_session_stats(
-                                                            shard_ref.workchain,
-                                                            shard_ref.shard,
-                                                            shard_ref.seqno,
-                                                        )
-                                                    ),
-                                                )
-                                            )
-                                        if tx_refs.mc_block_seqno:
-                                            tasks.append(
-                                                (
-                                                    "mc",
-                                                    asyncio.create_task(
-                                                        self.query_session_stats(
-                                                            -1,
-                                                            "8000000000000000",
-                                                            tx_refs.mc_block_seqno,
-                                                        )
-                                                    ),
-                                                )
-                                            )
-                                        if tasks:
-                                            results = await asyncio.gather(*(t for _, t in tasks))
-                                            for (label, _), res in zip(tasks, results):
-                                                if label == "shard":
-                                                    shard_metrics = res
-                                                elif label == "mc":
-                                                    mc_metrics = res
-                                    if shard_metrics or mc_metrics:
-                                        target_db.update_session_stats_times(m.addr, m.utime, shard_metrics, mc_metrics)
-                                        logger.success(f"{self.dbstr}: session_stats stored (shard={'yes' if shard_metrics else 'no'}, mc={'yes' if mc_metrics else 'no'})")
-                                    else:
-                                        logger.info(f"{self.dbstr}: session_stats no data within timeout")
+                                    asyncio.create_task(
+                                        self._background_session_stats(
+                                            tx_hash=tx_hash,
+                                            addr=m.addr,
+                                            utime=m.utime,
+                                        )
+                                    )
                 
                 # listen for events
                 await self.client.listen(on_event)
