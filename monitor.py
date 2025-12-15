@@ -224,14 +224,36 @@ class TransactionsMonitor:
             shard_int = shard_int - 2**64 # Int64 problems in ClickHouse
 
         query = f"""
-            SELECT created_timestamp, validator_adnl, gen_utime, got_block_at, collated_at,
-                   got_submit_at, validated_at, approved_66pct_at, signed_66pct_at
-            FROM {database}.producers
-            WHERE block_seqno = %(seqno)s
-              AND block_workchain = %(wc)s
-              AND block_shard = %(shard)s
-              AND validator_adnl IN %(validators)s
-              AND got_block_at IS NOT NULL
+            WITH t_data AS (
+                SELECT
+                    created_timestamp,
+                    validator_adnl,
+                    gen_utime,
+                    got_block_at,
+                    collated_at,
+                    got_submit_at,
+                    validated_at,
+                    approved_66pct_at,
+                    signed_66pct_at
+                FROM {database}.producers
+                WHERE block_seqno = %(seqno)s
+                  AND block_workchain = %(wc)s
+                  AND block_shard = %(shard)s
+                  AND got_block_at IS NOT NULL
+
+            )
+            SELECT
+                created_timestamp,
+                validator_adnl,
+                gen_utime,
+                got_block_at,
+                collated_at,
+                got_submit_at,
+                validated_at,
+                approved_66pct_at,
+                signed_66pct_at
+            FROM t_data
+            WHERE validator_adnl IN %(validators)s
             ORDER BY collated_at DESC, gen_utime DESC
             LIMIT 1
         """
@@ -248,6 +270,7 @@ class TransactionsMonitor:
             try:
                 for _ in range(2):
                     logger.debug(f"{self.dbstr}: session_stats query attempt {_ + 1} of 2 for ({workchain}, {shard_int}, {seqno})")
+                    t0 = time.time()
                     rows = client.execute(
                         query,
                         {
@@ -257,6 +280,8 @@ class TransactionsMonitor:
                             "validators": tuple(validators),
                         },
                     )
+                    dt = (time.time() - t0) * 1000
+                    logger.debug(f"{self.dbstr}: session_stats query done in {dt:.1f}ms for ({workchain}, {shard_int}, {seqno})")
                     if isinstance(rows, list) and rows:
                         logger.debug(f"{self.dbstr}: session_stats query successful for shard {shard_int} workchain {workchain} seqno {seqno}")
                         row = rows[0]
