@@ -239,8 +239,6 @@ class TransactionsMonitor:
                 WHERE block_seqno = %(seqno)s
                   AND block_workchain = %(wc)s
                   AND block_shard = %(shard)s
-                  AND got_block_at IS NOT NULL
-
             )
             SELECT
                 created_timestamp,
@@ -254,6 +252,7 @@ class TransactionsMonitor:
                 signed_66pct_at
             FROM t_data
             WHERE validator_adnl IN %(validators)s
+              AND got_block_at IS NOT NULL
             ORDER BY collated_at DESC, gen_utime DESC
             LIMIT 1
         """
