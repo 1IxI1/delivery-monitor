@@ -296,7 +296,8 @@ class TransactionsMonitor:
                             "approved_66pct_at": row[7],
                             "signed_66pct_at": row[8],
                         }
-                    time.sleep(10)
+                    if _ == 0:
+                        time.sleep(10)
             except Exception as e:
                 logger.warning(f"{self.dbstr}: session_stats query failed: {e}")
             finally:
