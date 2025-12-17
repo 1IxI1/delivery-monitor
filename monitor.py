@@ -425,8 +425,8 @@ class TransactionsMonitor:
 
     def update_streaming_field(self, msg: MsgInfo, field: str, value: float) -> bool:
         """update single streaming field for a message, only if not already set.
-        enforces order: pending only if no confirmed/finalized, confirmed only if no finalized.
-        also nullifies pending time if it arrived too close to confirmed/finalized (<0.1s).
+        enforces order: pending only if no confirmed/signed/finalized, confirmed only if no signed/finalized, signed only if no finalized.
+        also nullifies pending time if it arrived too close to confirmed/signed/finalized (<0.1s).
         returns True if field was updated, False if skipped."""
         target_db = self.db_second if self.db_second else self.db
         updated, fixed_count = target_db.update_streaming_field(msg.addr, msg.utime, msg.msghash, field, value)
@@ -434,9 +434,9 @@ class TransactionsMonitor:
         if fixed_count > 0:
             # figure out which pending field was nullified
             pending_field = None
-            if field in ("confirmed_tx_in", "finalized_tx_in"):
+            if field in ("confirmed_tx_in", "signed_tx_in", "finalized_tx_in"):
                 pending_field = "pending_tx_in"
-            elif field in ("confirmed_action_in", "finalized_action_in"):
+            elif field in ("confirmed_action_in", "signed_action_in", "finalized_action_in"):
                 pending_field = "pending_action_in"
             if pending_field:
                 logger.warning(f"{self.dbstr}: Nullified {fixed_count} of {pending_field} for {msg.addr}:{msg.utime}")
@@ -515,13 +515,15 @@ class TransactionsMonitor:
                     if not event_type or not finality:
                         return
                                         
-                    # type is "transactions" or "actions", finality is "pending"/"confirmed"/"finalized"
+                    # type is "transactions" or "actions", finality is "pending"/"confirmed"/"signed"/"finalized"
                     field = None
                     if event_type == "transactions":
                         if finality == "pending":
                             field = "pending_tx_in"
                         elif finality == "confirmed":
                             field = "confirmed_tx_in"
+                        elif finality == "signed":
+                            field = "signed_tx_in"
                         elif finality == "finalized":
                             field = "finalized_tx_in"
                     elif event_type == "actions":
@@ -529,6 +531,8 @@ class TransactionsMonitor:
                             field = "pending_action_in"
                         elif finality == "confirmed":
                             field = "confirmed_action_in"
+                        elif finality == "signed":
+                            field = "signed_action_in"
                         elif finality == "finalized":
                             field = "finalized_action_in"
                     
@@ -613,7 +617,7 @@ class TransactionsMonitor:
                                     "finalized_action": False,
                                 }
                             
-                            # track finalized state
+                            # track finalized state (only finalized matters for completion)
                             if field == "finalized_tx_in":
                                 msg_tracking[m.msghash]["finalized_tx"] = True
                             elif field == "finalized_action_in":

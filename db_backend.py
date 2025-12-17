@@ -101,6 +101,8 @@ class SQLiteBackend(DatabaseBackend):
                 pending_action_in REAL,
                 confirmed_tx_in REAL,
                 confirmed_action_in REAL,
+                signed_tx_in REAL,
+                signed_action_in REAL,
                 finalized_tx_in REAL,
                 finalized_action_in REAL,
                 streaming_to_v3_lag REAL,
@@ -128,6 +130,8 @@ class SQLiteBackend(DatabaseBackend):
         """add new session_stats columns if db already exists"""
         cols = {row[1] for row in self.cursor.execute("PRAGMA table_info(txs)").fetchall()}
         new_cols = [
+            "signed_tx_in",
+            "signed_action_in",
             "till_started_shard_block",
             "till_collated_shard",
             "till_got_submit_shard",
@@ -183,13 +187,19 @@ class SQLiteBackend(DatabaseBackend):
         extra_cond = ""
         pending_field = None
         if field == "pending_tx_in":
-            extra_cond = " AND confirmed_tx_in IS NULL AND finalized_tx_in IS NULL"
+            extra_cond = " AND confirmed_tx_in IS NULL AND signed_tx_in IS NULL AND finalized_tx_in IS NULL"
         elif field == "pending_action_in":
-            extra_cond = " AND confirmed_action_in IS NULL AND finalized_action_in IS NULL"
+            extra_cond = " AND confirmed_action_in IS NULL AND signed_action_in IS NULL AND finalized_action_in IS NULL"
         elif field == "confirmed_tx_in":
-            extra_cond = " AND finalized_tx_in IS NULL"
+            extra_cond = " AND signed_tx_in IS NULL AND finalized_tx_in IS NULL"
             pending_field = "pending_tx_in"
         elif field == "confirmed_action_in":
+            extra_cond = " AND signed_action_in IS NULL AND finalized_action_in IS NULL"
+            pending_field = "pending_action_in"
+        elif field == "signed_tx_in":
+            extra_cond = " AND finalized_tx_in IS NULL"
+            pending_field = "pending_tx_in"
+        elif field == "signed_action_in":
             extra_cond = " AND finalized_action_in IS NULL"
             pending_field = "pending_action_in"
         elif field == "finalized_tx_in":
@@ -327,6 +337,7 @@ class SQLiteBackend(DatabaseBackend):
                    AVG(sendboc_took),
                    AVG(pending_tx_in), AVG(pending_action_in),
                    AVG(confirmed_tx_in), AVG(confirmed_action_in),
+                   AVG(signed_tx_in), AVG(signed_action_in),
                    AVG(finalized_tx_in), AVG(finalized_action_in),
                    AVG(streaming_to_v3_lag),
                    AVG(ping_ws), AVG(ping_v3)
@@ -354,6 +365,7 @@ class SQLiteBackend(DatabaseBackend):
                    AVG(sendboc_took),
                    AVG(pending_tx_in), AVG(pending_action_in),
                    AVG(confirmed_tx_in), AVG(confirmed_action_in),
+                   AVG(signed_tx_in), AVG(signed_action_in),
                    AVG(finalized_tx_in), AVG(finalized_action_in),
                    AVG(streaming_to_v3_lag),
                    AVG(ping_ws), AVG(ping_v3)
@@ -417,6 +429,8 @@ class ClickHouseBackend(DatabaseBackend):
                 pending_action_in Nullable(Float64),
                 confirmed_tx_in Nullable(Float64),
                 confirmed_action_in Nullable(Float64),
+                signed_tx_in Nullable(Float64),
+                signed_action_in Nullable(Float64),
                 finalized_tx_in Nullable(Float64),
                 finalized_action_in Nullable(Float64),
                 streaming_to_v3_lag Nullable(Float64),
@@ -443,6 +457,8 @@ class ClickHouseBackend(DatabaseBackend):
     def _ensure_session_stats_columns(self) -> None:
         """add session_stats columns for existing tables"""
         columns = {
+            "signed_tx_in": "Nullable(Float64)",
+            "signed_action_in": "Nullable(Float64)",
             "till_started_shard_block": "Nullable(Float64)",
             "till_collated_shard": "Nullable(Float64)",
             "till_got_submit_shard": "Nullable(Float64)",
@@ -498,7 +514,8 @@ class ClickHouseBackend(DatabaseBackend):
         rows = self.client.execute(
             f"""SELECT msghash, is_found, executed_in, found_in, commited_in, sendboc_took,
                        pending_tx_in, pending_action_in, confirmed_tx_in, confirmed_action_in,
-                       finalized_tx_in, finalized_action_in, streaming_to_v3_lag, ping_ws, ping_v3,
+                       signed_tx_in, signed_action_in, finalized_tx_in, finalized_action_in,
+                       streaming_to_v3_lag, ping_ws, ping_v3,
                        till_started_shard_block, till_collated_shard, till_got_submit_shard,
                        till_validated_shard, till_approved_66pct_shard, till_signed_66pct_shard,
                        till_started_mc_block, till_collated_mc, till_got_submit_mc,
@@ -514,14 +531,15 @@ class ClickHouseBackend(DatabaseBackend):
             "found_in": row[3], "commited_in": row[4], "sendboc_took": row[5],
             "pending_tx_in": row[6], "pending_action_in": row[7],
             "confirmed_tx_in": row[8], "confirmed_action_in": row[9],
-            "finalized_tx_in": row[10], "finalized_action_in": row[11],
-            "streaming_to_v3_lag": row[12], "ping_ws": row[13], "ping_v3": row[14],
-            "till_started_shard_block": row[15], "till_collated_shard": row[16],
-            "till_got_submit_shard": row[17], "till_validated_shard": row[18],
-            "till_approved_66pct_shard": row[19], "till_signed_66pct_shard": row[20],
-            "till_started_mc_block": row[21], "till_collated_mc": row[22],
-            "till_got_submit_mc": row[23], "till_validated_mc": row[24],
-            "till_approved_66pct_mc": row[25], "till_signed_66pct_mc": row[26],
+            "signed_tx_in": row[10], "signed_action_in": row[11],
+            "finalized_tx_in": row[12], "finalized_action_in": row[13],
+            "streaming_to_v3_lag": row[14], "ping_ws": row[15], "ping_v3": row[16],
+            "till_started_shard_block": row[17], "till_collated_shard": row[18],
+            "till_got_submit_shard": row[19], "till_validated_shard": row[20],
+            "till_approved_66pct_shard": row[21], "till_signed_66pct_shard": row[22],
+            "till_started_mc_block": row[23], "till_collated_mc": row[24],
+            "till_got_submit_mc": row[25], "till_validated_mc": row[26],
+            "till_approved_66pct_mc": row[27], "till_signed_66pct_mc": row[28],
         }
     
     def update_streaming_field(self, addr: str, utime: float, msghash: str,
@@ -532,16 +550,24 @@ class ClickHouseBackend(DatabaseBackend):
         skip = False
         pending_field = None
         if field == "pending_tx_in":
-            if current and (current.get("confirmed_tx_in") or current.get("finalized_tx_in")):
+            if current and (current.get("confirmed_tx_in") or current.get("signed_tx_in") or current.get("finalized_tx_in")):
                 skip = True
         elif field == "pending_action_in":
-            if current and (current.get("confirmed_action_in") or current.get("finalized_action_in")):
+            if current and (current.get("confirmed_action_in") or current.get("signed_action_in") or current.get("finalized_action_in")):
                 skip = True
         elif field == "confirmed_tx_in":
-            if current and current.get("finalized_tx_in"):
+            if current and (current.get("signed_tx_in") or current.get("finalized_tx_in")):
                 skip = True
             pending_field = "pending_tx_in"
         elif field == "confirmed_action_in":
+            if current and (current.get("signed_action_in") or current.get("finalized_action_in")):
+                skip = True
+            pending_field = "pending_action_in"
+        elif field == "signed_tx_in":
+            if current and current.get("finalized_tx_in"):
+                skip = True
+            pending_field = "pending_tx_in"
+        elif field == "signed_action_in":
             if current and current.get("finalized_action_in"):
                 skip = True
             pending_field = "pending_action_in"
@@ -569,6 +595,8 @@ class ClickHouseBackend(DatabaseBackend):
             "pending_action_in": current.get("pending_action_in") if current else None,
             "confirmed_tx_in": current.get("confirmed_tx_in") if current else None,
             "confirmed_action_in": current.get("confirmed_action_in") if current else None,
+            "signed_tx_in": current.get("signed_tx_in") if current else None,
+            "signed_action_in": current.get("signed_action_in") if current else None,
             "finalized_tx_in": current.get("finalized_tx_in") if current else None,
             "finalized_action_in": current.get("finalized_action_in") if current else None,
             "streaming_to_v3_lag": current.get("streaming_to_v3_lag") if current else None,
@@ -600,7 +628,8 @@ class ClickHouseBackend(DatabaseBackend):
             f"""INSERT INTO {self.table} 
                 (addr, utime, msghash, is_found, executed_in, found_in, commited_in, sendboc_took,
                  pending_tx_in, pending_action_in, confirmed_tx_in, confirmed_action_in,
-                 finalized_tx_in, finalized_action_in, streaming_to_v3_lag, ping_ws, ping_v3,
+                 signed_tx_in, signed_action_in, finalized_tx_in, finalized_action_in,
+                 streaming_to_v3_lag, ping_ws, ping_v3,
                  till_started_shard_block, till_collated_shard, till_got_submit_shard,
                  till_validated_shard, till_approved_66pct_shard, till_signed_66pct_shard,
                  till_started_mc_block, till_collated_mc, till_got_submit_mc,
@@ -609,6 +638,7 @@ class ClickHouseBackend(DatabaseBackend):
               new_row["executed_in"], new_row["found_in"], new_row["commited_in"], new_row["sendboc_took"],
               new_row["pending_tx_in"], new_row["pending_action_in"],
               new_row["confirmed_tx_in"], new_row["confirmed_action_in"],
+              new_row["signed_tx_in"], new_row["signed_action_in"],
               new_row["finalized_tx_in"], new_row["finalized_action_in"], new_row["streaming_to_v3_lag"],
               new_row["ping_ws"], new_row["ping_v3"],
               new_row["till_started_shard_block"], new_row["till_collated_shard"], new_row["till_got_submit_shard"],
@@ -625,7 +655,8 @@ class ClickHouseBackend(DatabaseBackend):
                 f"""INSERT INTO {self.table} 
                     (addr, utime, msghash, is_found, executed_in, found_in, commited_in, sendboc_took,
                      pending_tx_in, pending_action_in, confirmed_tx_in, confirmed_action_in,
-                     finalized_tx_in, finalized_action_in, streaming_to_v3_lag, ping_ws, ping_v3,
+                     signed_tx_in, signed_action_in, finalized_tx_in, finalized_action_in,
+                     streaming_to_v3_lag, ping_ws, ping_v3,
                      till_started_shard_block, till_collated_shard, till_got_submit_shard,
                      till_validated_shard, till_approved_66pct_shard, till_signed_66pct_shard,
                      till_started_mc_block, till_collated_mc, till_got_submit_mc,
@@ -634,6 +665,7 @@ class ClickHouseBackend(DatabaseBackend):
                   current["executed_in"], current["found_in"], current["commited_in"], current["sendboc_took"],
                   current["pending_tx_in"], current["pending_action_in"],
                   current["confirmed_tx_in"], current["confirmed_action_in"],
+                  current["signed_tx_in"], current["signed_action_in"],
                   current["finalized_tx_in"], current["finalized_action_in"], current["streaming_to_v3_lag"],
                   current["ping_ws"], current["ping_v3"],
                   current.get("till_started_shard_block"), current.get("till_collated_shard"),
@@ -660,7 +692,8 @@ class ClickHouseBackend(DatabaseBackend):
                 f"""INSERT INTO {self.table} 
                     (addr, utime, msghash, is_found, executed_in, found_in, commited_in, sendboc_took,
                      pending_tx_in, pending_action_in, confirmed_tx_in, confirmed_action_in,
-                     finalized_tx_in, finalized_action_in, streaming_to_v3_lag, ping_ws, ping_v3,
+                     signed_tx_in, signed_action_in, finalized_tx_in, finalized_action_in,
+                     streaming_to_v3_lag, ping_ws, ping_v3,
                      till_started_shard_block, till_collated_shard, till_got_submit_shard,
                      till_validated_shard, till_approved_66pct_shard, till_signed_66pct_shard,
                      till_started_mc_block, till_collated_mc, till_got_submit_mc,
@@ -669,6 +702,7 @@ class ClickHouseBackend(DatabaseBackend):
                   new_executed, current["found_in"], new_commited, current["sendboc_took"],
                   current["pending_tx_in"], current["pending_action_in"],
                   current["confirmed_tx_in"], current["confirmed_action_in"],
+                  current["signed_tx_in"], current["signed_action_in"],
                   current["finalized_tx_in"], current["finalized_action_in"], new_lag,
                   new_ping_ws, new_ping_v3,
                   current.get("till_started_shard_block"), current.get("till_collated_shard"),
@@ -734,7 +768,8 @@ class ClickHouseBackend(DatabaseBackend):
             f"""INSERT INTO {self.table} 
                 (addr, utime, msghash, is_found, executed_in, found_in, commited_in, sendboc_took,
                  pending_tx_in, pending_action_in, confirmed_tx_in, confirmed_action_in,
-                 finalized_tx_in, finalized_action_in, streaming_to_v3_lag, ping_ws, ping_v3,
+                 signed_tx_in, signed_action_in, finalized_tx_in, finalized_action_in,
+                 streaming_to_v3_lag, ping_ws, ping_v3,
                  till_started_shard_block, till_collated_shard, till_got_submit_shard,
                  till_validated_shard, till_approved_66pct_shard, till_signed_66pct_shard,
                  till_started_mc_block, till_collated_mc, till_got_submit_mc,
@@ -743,6 +778,7 @@ class ClickHouseBackend(DatabaseBackend):
               new_row.get("executed_in"), new_row.get("found_in"), new_row.get("commited_in"), new_row.get("sendboc_took"),
               new_row.get("pending_tx_in"), new_row.get("pending_action_in"),
               new_row.get("confirmed_tx_in"), new_row.get("confirmed_action_in"),
+              new_row.get("signed_tx_in"), new_row.get("signed_action_in"),
               new_row.get("finalized_tx_in"), new_row.get("finalized_action_in"), new_row.get("streaming_to_v3_lag"),
               new_row.get("ping_ws"), new_row.get("ping_v3"),
               new_row.get("till_started_shard_block"), new_row.get("till_collated_shard"), new_row.get("till_got_submit_shard"),
@@ -774,6 +810,7 @@ class ClickHouseBackend(DatabaseBackend):
                    avg(sendboc_took),
                    avg(pending_tx_in), avg(pending_action_in),
                    avg(confirmed_tx_in), avg(confirmed_action_in),
+                   avg(signed_tx_in), avg(signed_action_in),
                    avg(finalized_tx_in), avg(finalized_action_in),
                    avg(streaming_to_v3_lag),
                    avg(ping_ws), avg(ping_v3)
@@ -805,6 +842,7 @@ class ClickHouseBackend(DatabaseBackend):
                    avg(sendboc_took),
                    avg(pending_tx_in), avg(pending_action_in),
                    avg(confirmed_tx_in), avg(confirmed_action_in),
+                   avg(signed_tx_in), avg(signed_action_in),
                    avg(finalized_tx_in), avg(finalized_action_in),
                    avg(streaming_to_v3_lag),
                    avg(ping_ws), avg(ping_v3)
