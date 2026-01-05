@@ -203,7 +203,7 @@ class TransactionsMonitor:
         logger.error(f"{self.dbstr}: mc block {seqno} not found after 100 attempts")
         return None
     
-    async def query_session_stats(self, workchain: int, shard: str, seqno: int) -> Optional[dict]:
+    async def query_session_stats(self, workchain: int, shard: str, seqno: int, block_root_hash: str) -> Optional[dict]:
         """query session_stats ClickHouse with polling"""
         cfg = self.session_stats_config or {}
         if not cfg.get("session_stats_enabled"):
@@ -239,6 +239,7 @@ class TransactionsMonitor:
                 WHERE block_seqno = %(seqno)s
                   AND block_workchain = %(wc)s
                   AND block_shard = %(shard)s
+                  AND block_root_hash = %(root_hash)s
             )
             SELECT
                 created_timestamp,
@@ -268,7 +269,7 @@ class TransactionsMonitor:
             )
             try:
                 for _ in range(2):
-                    logger.debug(f"{self.dbstr}: session_stats query attempt {_ + 1} of 2 for ({workchain}, {shard_int}, {seqno})")
+                    logger.debug(f"{self.dbstr}: session_stats query attempt {_ + 1} of 2 for ({workchain}, {shard_int}, {seqno}) root_hash {block_root_hash}")
                     t0 = time.time()
                     rows = client.execute(
                         query,
@@ -277,12 +278,13 @@ class TransactionsMonitor:
                             "wc": int(workchain),
                             "shard": shard_int,
                             "validators": tuple(validators),
+                            "root_hash": block_root_hash,
                         },
                     )
                     dt = (time.time() - t0) * 1000
-                    logger.debug(f"{self.dbstr}: session_stats query done in {dt:.1f}ms for ({workchain}, {shard_int}, {seqno})")
+                    logger.debug(f"{self.dbstr}: session_stats query done in {dt:.1f}ms for ({workchain}, {shard_int}, {seqno}) root_hash {block_root_hash}")
                     if isinstance(rows, list) and rows:
-                        logger.debug(f"{self.dbstr}: session_stats query successful for shard {shard_int} workchain {workchain} seqno {seqno}")
+                        logger.debug(f"{self.dbstr}: session_stats query successful for shard {shard_int} workchain {workchain} seqno {seqno} root_hash {block_root_hash}")
                         row = rows[0]
                         return {
                             "created_timestamp": row[0],
@@ -327,6 +329,7 @@ class TransactionsMonitor:
                                     shard_ref.workchain,
                                     shard_ref.shard,
                                     shard_ref.seqno,
+                                    shard_ref.block_root_hash,
                                 )
                             ),
                         )
@@ -340,6 +343,7 @@ class TransactionsMonitor:
                                     -1,
                                     "8000000000000000",
                                     tx_refs.mc_block_seqno,
+                                    tx_refs.mc_block_root_hash,
                                 )
                             ),
                         )
@@ -367,11 +371,13 @@ class TransactionsMonitor:
         workchain: int
         shard: str
         seqno: int
+        block_root_hash: str
 
     @dataclass
     class TxBlockRefs:
         block_ref: 'TransactionsMonitor.BlockRef'
         mc_block_seqno: int
+        mc_block_root_hash: str
 
     async def get_tx_block_refs(self, tx_hash: str) -> Optional[TxBlockRefs]:
         """fetch block refs for tx hash from v3 transactions endpoint"""
@@ -389,18 +395,47 @@ class TransactionsMonitor:
             if not block_ref_dict or not all(k in block_ref_dict for k in ("workchain", "shard", "seqno")):
                 logger.warning(f"{self.dbstr}: session_stats tx {tx_hash}... no block ref")
                 return None
-            block_ref = self.BlockRef(
-                workchain=block_ref_dict["workchain"],
-                shard=block_ref_dict["shard"],
-                seqno=block_ref_dict["seqno"]
-            )
             mc_block_seqno = tx.get("mc_block_seqno", None)
             if not mc_block_seqno:
                 logger.warning(f"{self.dbstr}: session_stats tx {tx_hash}... no mc block seqno")
                 return None
+            
+            # fetch shard block root_hash
+            shard_blocks_resp = await self.sender_client.get_blocks(
+                wc=block_ref_dict["workchain"],
+                shard=block_ref_dict["shard"],
+                seqno=block_ref_dict["seqno"],
+                limit=1
+            )
+            shard_blocks = shard_blocks_resp.get("blocks") if isinstance(shard_blocks_resp, dict) else None
+            if not shard_blocks or not shard_blocks[0].get("root_hash"):
+                logger.warning(f"{self.dbstr}: session_stats shard block not found or no root_hash")
+                return None
+            shard_root_hash = shard_blocks[0]["root_hash"]
+            
+            # fetch masterchain block root_hash
+            mc_blocks_resp = await self.sender_client.get_blocks(
+                wc=-1,
+                shard="8000000000000000",
+                seqno=mc_block_seqno,
+                limit=1
+            )
+            mc_blocks = mc_blocks_resp.get("blocks") if isinstance(mc_blocks_resp, dict) else None
+            if not mc_blocks or not mc_blocks[0].get("root_hash"):
+                logger.warning(f"{self.dbstr}: session_stats mc block not found or no root_hash")
+                return None
+            mc_root_hash = mc_blocks[0]["root_hash"]
+            
+            block_ref = self.BlockRef(
+                workchain=block_ref_dict["workchain"],
+                shard=block_ref_dict["shard"],
+                seqno=block_ref_dict["seqno"],
+                block_root_hash=shard_root_hash
+            )
             return self.TxBlockRefs(
                 block_ref=block_ref,
-                mc_block_seqno=mc_block_seqno
+                mc_block_seqno=mc_block_seqno,
+                mc_block_root_hash=mc_root_hash
             )
         except Exception as e:
             logger.warning(f"{self.dbstr}: session_stats tx lookup failed: {e}")

@@ -212,7 +212,7 @@ class TonCenterV3Client(TonCenterClient):
     async def get_blocks(
         self,
         wc: int = 0,
-        shard: int | None = None,
+        shard: str | None = None,
         seqno: int | None = None,
         limit: int = 10,
     ):
