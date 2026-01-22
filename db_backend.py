@@ -558,11 +558,13 @@ class ClickHouseBackend(DatabaseBackend):
             if current and (current.get("confirmed_action_in") or current.get("signed_action_in") or current.get("finalized_action_in")):
                 skip = True
         elif field == "confirmed_tx_in":
-            if current and (current.get("signed_tx_in") or current.get("finalized_tx_in")):
+            #if current and (current.get("signed_tx_in") or current.get("finalized_tx_in")):
+            if current and current.get("finalized_tx_in"):  # temporarily removed signed dependency
                 skip = True
             pending_field = "pending_tx_in"
         elif field == "confirmed_action_in":
-            if current and (current.get("signed_action_in") or current.get("finalized_action_in")):
+            #if current and (current.get("signed_action_in") or current.get("finalized_action_in")):
+            if current and current.get("finalized_action_in"):  # temporarily removed signed dependency
                 skip = True
             pending_field = "pending_action_in"
         elif field == "signed_tx_in":
