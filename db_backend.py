@@ -192,9 +192,11 @@ class SQLiteBackend(DatabaseBackend):
             extra_cond = " AND confirmed_action_in IS NULL AND signed_action_in IS NULL AND finalized_action_in IS NULL"
         elif field == "confirmed_tx_in":
             extra_cond = " AND signed_tx_in IS NULL AND finalized_tx_in IS NULL"
+            extra_cond = " AND finalized_tx_in IS NULL"  # temporarily removed signed dependency
             pending_field = "pending_tx_in"
         elif field == "confirmed_action_in":
             extra_cond = " AND signed_action_in IS NULL AND finalized_action_in IS NULL"
+            extra_cond = " AND finalized_action_in IS NULL"  # temporarily removed signed dependency
             pending_field = "pending_action_in"
         elif field == "signed_tx_in":
             extra_cond = " AND finalized_tx_in IS NULL"
