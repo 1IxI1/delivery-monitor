@@ -188,8 +188,8 @@ class TransactionsMonitor:
             logger.warning(f"{self.dbstr}: sender_client not set")
             return None
         
-        # poll until v3 indexes the block (up to 100 attempts)
-        for attempt in range(100):
+        # poll until v3 indexes the block (up to 500 attempts)
+        for attempt in range(500):
             try:
                 blocks = await self.sender_client.get_blocks(wc=-1, seqno=seqno, limit=1)
                 if blocks.get("blocks"):
@@ -200,7 +200,7 @@ class TransactionsMonitor:
                     return utime
             except Exception as e:
                 logger.warning(f"{self.dbstr}: failed to get mc block {seqno}: {e}")
-        logger.error(f"{self.dbstr}: mc block {seqno} not found after 100 attempts")
+        logger.error(f"{self.dbstr}: mc block {seqno} not found after 500 attempts")
         return None
     
     async def query_session_stats(self, workchain: int, shard: str, seqno: int, block_root_hash: str) -> Optional[dict]:
@@ -812,6 +812,7 @@ class TransactionsMonitor:
         # make a signature of `valid_until * seqno`
         valid_until = int(time.time()) + self.valid_until_timeout
         stamp = valid_until * seqno
+        logger.debug(f"{self.dbstr}: stamp: {stamp}, valid_until: {valid_until}, seqno: {seqno}")
         stamp_bytes = stamp.to_bytes(32, "big")
         signature = sign_message(stamp_bytes, wdata.sk).signature
 
@@ -850,6 +851,7 @@ class TransactionsMonitor:
         logger.debug(f"{self.dbstr}: serializing took {int(t_serialize*1000)}ms")
         
         t_sendboc = time.time()
+        logger.debug(f"{self.dbstr}: sending msg cell to_boc: {base64.b64encode(msg_cell.to_boc()).decode()}")
         probably_hash = await self.sendboc(msg_cell.to_boc())
         sendboc_took = time.time() - t_sendboc
         logger.debug(f"{self.dbstr}: sendboc took {int(sendboc_took*1000)}ms")
