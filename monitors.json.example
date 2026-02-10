@@ -65,7 +65,9 @@
             "dbname": "tc-streaming-ws",
             "to_send": 10,
             "extra_msg_boc": "b5ee9c72...",
-            "target_action_type": "ton_transfer"
+            "target_action_type": "ton_transfer",
+            "valid_until_timeout": 120,
+            "send_interval": 90
         }
     ]
 }

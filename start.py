@@ -12,8 +12,6 @@ filename = "monitors.json"
 
 # global config, set from top-level of monitors.json
 _db_config_base: dict = {}
-_valid_until_timeout: int = 40
-_send_interval: int = 40
 _session_stats_config_base: dict = {}
 
 
@@ -94,26 +92,26 @@ async def start_monitor(monitor_params: dict):
     db_config = get_db_config(is_testnet)
     session_stats_config = get_session_stats_config()
 
+    # get individual monitor settings with defaults
+    valid_until_timeout = monitor_params.get("valid_until_timeout", 60)
+    send_interval = monitor_params.get("send_interval", 60)
+
     monitor = TransactionsMonitor(
         client, wallets_path, dbname, db_config=db_config,
         dbname_second=dbname_second, to_send=to_send,
         sender_client=monitor_sender_client, with_state_init=with_state_init,
         extra_msg_boc=extra_msg_boc, target_action_type=target_action_type,
-        valid_until_timeout=_valid_until_timeout, send_interval=_send_interval,
+        valid_until_timeout=valid_until_timeout, send_interval=send_interval,
         session_stats_config=session_stats_config, is_testnet=is_testnet
     )
     await monitor.start_worker()
 
 
 async def start_all():
-    global _db_config_base, _valid_until_timeout, _send_interval, _session_stats_config_base
-    
+    global _db_config_base, _session_stats_config_base
+
     with open(filename, "r") as f:
         data = json.load(f)
-    
-    # load global timing config
-    _valid_until_timeout = data.get("valid_until_timeout", 40)
-    _send_interval = data.get("send_interval", 40)
     
     # load db config from top-level (shared by all monitors)
     _db_config_base = {
