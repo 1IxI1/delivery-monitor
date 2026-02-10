@@ -246,8 +246,8 @@ class TonCenterV3Client(TonCenterClient):
         serialized_boc = base64.b64encode(boc).decode()
         async with aiohttp.ClientSession() as session:
             r = await session.post(
-                f"http://tc-db-lb-01a.toncenter.local:18977/api/v2/sendBocReturnHash",
-                # f"{self.provider.base_url}message",
+                # f"http://tc-db-lb-01a.toncenter.local:18977/api/v2/sendBocReturnHash",
+                f"{self.provider.base_url}message",
                 headers={
                     "X-API-Key": self.provider.api_key,
                     "Content-Type": "application/json",
@@ -256,13 +256,13 @@ class TonCenterV3Client(TonCenterClient):
                 json={"boc": serialized_boc},
             )
             resjson = await r.json()
-            # if "message_hash" not in resjson:
-            #     raise Exception(f"Failed to send message: {resjson}")
-            if not resjson.get("ok"):
-                raise Exception(f"Failed to send message (debug): {resjson}")
+            if "message_hash" not in resjson:
+                raise Exception(f"Failed to send message: {resjson}")
+            # if not resjson.get("ok"):
+            #     raise Exception(f"Failed to send message (debug): {resjson}")
             logger.debug(resjson)
-            return resjson["result"]["hash_norm"]
-            # return resjson["message_hash_norm"]
+            # return resjson["result"]["hash_norm"]
+            return resjson["message_hash_norm"]
 
     async def get_seqno(self, addr: str):
         async with aiohttp.ClientSession() as session:
