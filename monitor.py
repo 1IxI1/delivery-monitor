@@ -188,8 +188,8 @@ class TransactionsMonitor:
             logger.warning(f"{self.dbstr}: sender_client not set")
             return None
         
-        # poll until v3 indexes the block (up to 500 attempts)
-        for attempt in range(500):
+        # poll until v3 indexes the block (up to 1000 attempts)
+        for attempt in range(1000):
             try:
                 blocks = await self.sender_client.get_blocks(wc=-1, seqno=seqno, limit=1)
                 if blocks.get("blocks"):
@@ -200,7 +200,7 @@ class TransactionsMonitor:
                     return utime
             except Exception as e:
                 logger.warning(f"{self.dbstr}: failed to get mc block {seqno}: {e}")
-        logger.error(f"{self.dbstr}: mc block {seqno} not found after 500 attempts")
+        logger.error(f"{self.dbstr}: mc block {seqno} not found after 1000 attempts")
         return None
     
     async def query_session_stats(self, workchain: int, shard: str, seqno: int, block_root_hash: str) -> Optional[dict]:
@@ -622,16 +622,17 @@ class TransactionsMonitor:
                                     
                                     if mc_seqno:
                                         mc_utime = await self.get_mc_block_time(mc_seqno)
-                                        streaming_to_v3_lag = time.time() - t_on_event
                                         if mc_utime:
+                                            streaming_to_v3_lag = time.time() - t_on_event
                                             commited_in = mc_utime - m.utime
                                         # update ping_v3 after get_mc_block_time (it measures ping)
                                         if self.sender_client:
                                             ping_v3 = self.sender_client.get_last_ping_v3()
                                     target_db = self.db_second if self.db_second else self.db
                                     target_db.update_blockchain_times(m.addr, m.utime, executed_in, commited_in, streaming_to_v3_lag, ping_ws, ping_v3)
-                                    logger.info(f"{self.dbstr}: blockchain: executed={executed_in:.3f}s, commited={commited_in:.3f}s, v3_lag={streaming_to_v3_lag:.3f}s" 
-                                                if commited_in else f"{self.dbstr}: blockchain: executed={executed_in:.3f}s, v3_lag={streaming_to_v3_lag:.3f}s")
+                                    commited_str = f", commited={commited_in:.3f}s" if commited_in else ""
+                                    v3_lag_str = f", v3_lag={streaming_to_v3_lag:.3f}s" if streaming_to_v3_lag is not None else ", v3_lag=n/a"
+                                    logger.info(f"{self.dbstr}: blockchain: executed={executed_in:.3f}s{commited_str}{v3_lag_str}")
 
                             # update streaming field
                             updated = self.update_streaming_field(m, field, time_in)
