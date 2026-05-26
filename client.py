@@ -363,6 +363,13 @@ class TonCenterStreamingClient:
                 "include_metadata": False
             }
             await self.websocket.send(json.dumps(subscribe_msg))
+            response = json.loads(await asyncio.wait_for(self.websocket.recv(), timeout=5))
+            if response.get("error"):
+                logger.error(f"streaming: subscribe failed: {response['error']}")
+                return False
+            if response.get("status") != "subscribed":
+                logger.error(f"streaming: unexpected subscribe response: {response}")
+                return False
             self._subscribed_addresses.update(addresses)
             logger.debug(f"streaming: subscribed to {len(addresses)} addresses")
             return True

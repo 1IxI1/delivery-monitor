@@ -33,7 +33,7 @@ class DatabaseBackend(ABC):
     @abstractmethod
     def update_streaming_field(self, addr: str, utime: float, msghash: str,
                                field: str, value: float) -> Tuple[bool, int]:
-        """returns (updated, fixed_count) where fixed_count is nullified pending fields"""
+        """returns (updated, reserved_count)"""
         pass
     
     @abstractmethod
@@ -185,7 +185,6 @@ class SQLiteBackend(DatabaseBackend):
                                field: str, value: float) -> Tuple[bool, int]:
         # ordering conditions
         extra_cond = ""
-        pending_field = None
         if field == "pending_tx_in":
             extra_cond = " AND confirmed_tx_in IS NULL AND signed_tx_in IS NULL AND finalized_tx_in IS NULL"
         elif field == "pending_action_in":
@@ -193,38 +192,21 @@ class SQLiteBackend(DatabaseBackend):
         elif field == "confirmed_tx_in":
             extra_cond = " AND signed_tx_in IS NULL AND finalized_tx_in IS NULL"
             extra_cond = " AND finalized_tx_in IS NULL"  # temporarily removed signed dependency
-            pending_field = "pending_tx_in"
         elif field == "confirmed_action_in":
             extra_cond = " AND signed_action_in IS NULL AND finalized_action_in IS NULL"
             extra_cond = " AND finalized_action_in IS NULL"  # temporarily removed signed dependency
-            pending_field = "pending_action_in"
         elif field == "signed_tx_in":
             extra_cond = " AND finalized_tx_in IS NULL"
-            pending_field = "pending_tx_in"
         elif field == "signed_action_in":
             extra_cond = " AND finalized_action_in IS NULL"
-            pending_field = "pending_action_in"
-        elif field == "finalized_tx_in":
-            pending_field = "pending_tx_in"
-        elif field == "finalized_action_in":
-            pending_field = "pending_action_in"
         
         self.cursor.execute(
             f"UPDATE txs SET {field} = ? WHERE addr = ? AND utime = ? AND {field} IS NULL{extra_cond}",
             (value, addr, utime),
         )
         updated = self.cursor.rowcount > 0
-        fixed_count = 0
-        
-        # nullify pending if it arrived too close (<0.1s)
-        if updated and pending_field:
-            self.cursor.execute(
-                f"UPDATE txs SET {pending_field} = NULL WHERE addr = ? AND utime = ? AND {pending_field} IS NOT NULL AND (? - {pending_field}) < 0.1",
-                (addr, utime, value),
-            )
-            fixed_count = self.cursor.rowcount
         self.connection.commit()
-        return updated, fixed_count
+        return updated, 0
     
     def mark_streaming_found(self, addr: str, utime: float) -> None:
         self.cursor.execute(
@@ -450,7 +432,7 @@ class ClickHouseBackend(DatabaseBackend):
                 till_validated_mc Nullable(Float64),
                 till_approved_66pct_mc Nullable(Float64),
                 till_signed_66pct_mc Nullable(Float64),
-                updated_at DateTime DEFAULT now()
+                updated_at DateTime64(6) DEFAULT now64(6)
             ) ENGINE = ReplacingMergeTree(updated_at)
             ORDER BY (addr, utime)
         """)
@@ -479,6 +461,10 @@ class ClickHouseBackend(DatabaseBackend):
                 self.client.execute(f"ALTER TABLE {self.table} ADD COLUMN IF NOT EXISTS {col} {col_type}")
             except Exception as e:
                 logger.warning(f"clickhouse alter add column {col} failed: {e}")
+        try:
+            self.client.execute(f"ALTER TABLE {self.table} MODIFY COLUMN IF EXISTS updated_at DateTime64(6) DEFAULT now64(6)")
+        except Exception as e:
+            logger.warning(f"clickhouse alter updated_at precision failed: {e}")
     
     def add_new_tx(self, addr: str, utime: float, msghash: str, sendboc_took: Optional[float]) -> None:
         self.client.execute(
@@ -550,7 +536,6 @@ class ClickHouseBackend(DatabaseBackend):
         
         # check ordering conditions
         skip = False
-        pending_field = None
         if field == "pending_tx_in":
             if current and (current.get("confirmed_tx_in") or current.get("signed_tx_in") or current.get("finalized_tx_in")):
                 skip = True
@@ -561,24 +546,16 @@ class ClickHouseBackend(DatabaseBackend):
             #if current and (current.get("signed_tx_in") or current.get("finalized_tx_in")):
             if current and current.get("finalized_tx_in"):  # temporarily removed signed dependency
                 skip = True
-            pending_field = "pending_tx_in"
         elif field == "confirmed_action_in":
             #if current and (current.get("signed_action_in") or current.get("finalized_action_in")):
             if current and current.get("finalized_action_in"):  # temporarily removed signed dependency
                 skip = True
-            pending_field = "pending_action_in"
         elif field == "signed_tx_in":
             if current and current.get("finalized_tx_in"):
                 skip = True
-            pending_field = "pending_tx_in"
         elif field == "signed_action_in":
             if current and current.get("finalized_action_in"):
                 skip = True
-            pending_field = "pending_action_in"
-        elif field == "finalized_tx_in":
-            pending_field = "pending_tx_in"
-        elif field == "finalized_action_in":
-            pending_field = "pending_action_in"
         
         # skip if field already set
         if current and current.get(field) is not None:
@@ -620,14 +597,7 @@ class ClickHouseBackend(DatabaseBackend):
             "till_signed_66pct_mc": current.get("till_signed_66pct_mc") if current else None,
         }
         new_row[field] = value
-        
-        # nullify pending if it arrived too close (<0.1s)
-        fixed_count = 0
-        if pending_field and new_row.get(pending_field) is not None:
-            if (value - new_row[pending_field]) < 0.1:
-                new_row[pending_field] = None
-                fixed_count = 1
-        
+
         self.client.execute(
             f"""INSERT INTO {self.table} 
                 (addr, utime, msghash, is_found, executed_in, found_in, commited_in, sendboc_took,
@@ -650,7 +620,7 @@ class ClickHouseBackend(DatabaseBackend):
               new_row["till_started_mc_block"], new_row["till_collated_mc"], new_row["till_got_submit_mc"],
               new_row["till_validated_mc"], new_row["till_approved_66pct_mc"], new_row["till_signed_66pct_mc"])],
         )
-        return True, fixed_count
+        return True, 0
     
     def mark_streaming_found(self, addr: str, utime: float) -> None:
         current = self._get_current_row(addr, utime)
@@ -878,4 +848,3 @@ def create_backend(dbname: str, db_config: dict) -> DatabaseBackend:
         )
     else:
         return SQLiteBackend(dbname=dbname)
-

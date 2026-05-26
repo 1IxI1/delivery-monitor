@@ -104,6 +104,7 @@ class TransactionsMonitor:
         self.sent_count = 0
         self.sender_client = sender_client  # for streaming mode
         self.mc_block_cache: dict[int, float] = {}  # seqno -> utime
+        self._streaming_ready: Optional[asyncio.Event] = None
 
     async def init_client(self):
         if isinstance(self.client, LiteBalancer):
@@ -461,21 +462,9 @@ class TransactionsMonitor:
     def update_streaming_field(self, msg: MsgInfo, field: str, value: float) -> bool:
         """update single streaming field for a message, only if not already set.
         enforces order: pending only if no confirmed/signed/finalized, confirmed only if no signed/finalized, signed only if no finalized.
-        also nullifies pending time if it arrived too close to confirmed/signed/finalized (<0.1s).
         returns True if field was updated, False if skipped."""
         target_db = self.db_second if self.db_second else self.db
-        updated, fixed_count = target_db.update_streaming_field(msg.addr, msg.utime, msg.msghash, field, value)
-        
-        if fixed_count > 0:
-            # figure out which pending field was nullified
-            pending_field = None
-            if field in ("confirmed_tx_in", "signed_tx_in", "finalized_tx_in"):
-                pending_field = "pending_tx_in"
-            elif field in ("confirmed_action_in", "signed_action_in", "finalized_action_in"):
-                pending_field = "pending_action_in"
-            if pending_field:
-                logger.warning(f"{self.dbstr}: Nullified {fixed_count} of {pending_field} for {msg.addr}:{msg.utime}")
-        
+        updated, _ = target_db.update_streaming_field(msg.addr, msg.utime, msg.msghash, field, value)
         return updated
 
     def mark_streaming_found(self, msg: MsgInfo) -> None:
@@ -496,6 +485,73 @@ class TransactionsMonitor:
         
         return msgs
 
+    @staticmethod
+    def streaming_field(event_type: str, finality: str) -> Optional[str]:
+        fields = {
+            ("transactions", "pending"): "pending_tx_in",
+            ("transactions", "confirmed"): "confirmed_tx_in",
+            ("transactions", "signed"): "signed_tx_in",
+            ("transactions", "finalized"): "finalized_tx_in",
+            ("actions", "pending"): "pending_action_in",
+            ("actions", "confirmed"): "confirmed_action_in",
+            ("actions", "signed"): "signed_action_in",
+            ("actions", "finalized"): "finalized_action_in",
+        }
+        return fields.get((event_type, finality))
+
+    @staticmethod
+    def streaming_event_keys(data: dict, event_type: str) -> set[str]:
+        if event_type == "transactions":
+            keys = set()
+            trace_hash = data.get("trace_external_hash_norm")
+            if trace_hash:
+                keys.add(trace_hash)
+            for tx in data.get("transactions", []):
+                if not isinstance(tx, dict):
+                    continue
+                in_msg = tx.get("in_msg") or {}
+                tx_hash = in_msg.get("hash_norm") or in_msg.get("hash")
+                if tx_hash:
+                    keys.add(tx_hash)
+            return keys
+        if event_type == "actions":
+            trace_hash = data.get("trace_external_hash_norm")
+            return {trace_hash} if trace_hash else set()
+        return set()
+
+    def match_streaming_event(
+        self,
+        data: dict,
+        event_type: str,
+        msg: MsgInfo,
+        log_missing_action: bool = True,
+    ) -> Tuple[bool, Optional[dict]]:
+        if event_type == "transactions":
+            if data.get("trace_external_hash_norm") == msg.msghash:
+                return True, None
+            for tx in data.get("transactions", []):
+                if not isinstance(tx, dict):
+                    continue
+                in_msg = tx.get("in_msg") or {}
+                tx_hash = in_msg.get("hash_norm") or in_msg.get("hash")
+                if tx_hash == msg.msghash:
+                    return True, None
+            return False, None
+
+        if event_type == "actions":
+            trace_hash = data.get("trace_external_hash_norm")
+            if trace_hash != msg.msghash:
+                return False, None
+            for action in data.get("actions", []):
+                action_type = action.get("type")
+                if action_type == self.target_action_type:
+                    return True, action
+            if log_missing_action:
+                logger.warning(f"{self.dbstr}: No action type {self.target_action_type} found in actions, but trace hash matches")
+            return False, None
+
+        return False, None
+
     async def watch_transactions_streaming(self):
         """watch for transactions via websocket streaming api"""
         if not isinstance(self.client, TonCenterStreamingClient):
@@ -506,6 +562,9 @@ class TransactionsMonitor:
         
         while True:
             try:
+                if self._streaming_ready:
+                    self._streaming_ready.clear()
+
                 # connect to websocket
                 if not await self.client.connect():
                     logger.warning(f"{self.dbstr}: connection failed, retrying in {reconnect_delay}s")
@@ -515,27 +574,21 @@ class TransactionsMonitor:
                 
                 reconnect_delay = 1  # reset on successful connect
                 
-                # get addresses to subscribe
-                missing = self.get_streaming_missing_msgs()
-                if not missing:
-                    for _ in range(1000):
-                        await asyncio.sleep(0.01)
-                        missing = self.get_streaming_missing_msgs()
-                        if missing:
-                            break
-                    if not missing:
-                        logger.warning(f"{self.dbstr}: still no missing messages, sleeping and unsubscribing")
-                        await asyncio.sleep(1)
-                        await self.client.close()
-                        continue
-                
-                addresses = list(set(m.addr for m in missing))
+                # subscribe before sending starts; pending events can arrive before sendboc returns
+                addresses = list(set(w.addr for w in self.wallets))
+                if not addresses:
+                    logger.warning(f"{self.dbstr}: no wallets to subscribe")
+                    await asyncio.sleep(1)
+                    await self.client.close()
+                    continue
                 
                 if not await self.client.subscribe(addresses, ["transactions", "actions"]):
                     logger.error(f"{self.dbstr}: subscribe failed")
                     await self.client.close()
                     continue
-                
+
+                missing = self.get_streaming_missing_msgs()
+
                 # track finalized state for each message
                 msg_tracking: dict[str, dict[str, bool]] = {}
                 for m in missing:
@@ -544,146 +597,174 @@ class TransactionsMonitor:
                         "finalized_action": False,
                     }
                 
+                cached_events: dict[str, list[tuple[float, dict]]] = {}
+                cached_event_ttl = 120.0
+
+                if self._streaming_ready:
+                    self._streaming_ready.set()
+
+                async def handle_matched_event(
+                    data: dict,
+                    event_seen_at: float,
+                    m: MsgInfo,
+                    event_type: str,
+                    finality: str,
+                    field: str,
+                    matched_action: Optional[dict],
+                ) -> None:
+                    time_in = event_seen_at - m.utime
+
+                    # extract blockchain times from finalized action
+                    if field == "finalized_action_in" and matched_action:
+                        end_utime = matched_action.get("end_utime")
+                        mc_seqno = matched_action.get("trace_mc_seqno_end")
+                        if end_utime:
+                            executed_in = float(end_utime) - m.utime
+                            commited_in = None
+                            streaming_to_v3_lag = None
+                            ping_ws = None
+                            ping_v3 = None
+
+                            # get ping values
+                            if isinstance(self.client, TonCenterStreamingClient):
+                                ping_ws = self.client.get_last_ping_ws()
+                            if self.sender_client:
+                                ping_v3 = self.sender_client.get_last_ping_v3()
+
+                            if mc_seqno:
+                                mc_utime = await self.get_mc_block_time(mc_seqno)
+                                if mc_utime:
+                                    streaming_to_v3_lag = time.time() - event_seen_at
+                                    commited_in = mc_utime - m.utime
+                                # update ping_v3 after get_mc_block_time (it measures ping)
+                                if self.sender_client:
+                                    ping_v3 = self.sender_client.get_last_ping_v3()
+                            target_db = self.db_second if self.db_second else self.db
+                            target_db.update_blockchain_times(m.addr, m.utime, executed_in, commited_in, streaming_to_v3_lag, ping_ws, ping_v3)
+                            commited_str = f", commited={commited_in:.3f}s" if commited_in else ""
+                            v3_lag_str = f", v3_lag={streaming_to_v3_lag:.3f}s" if streaming_to_v3_lag is not None else ", v3_lag=n/a"
+                            logger.info(f"{self.dbstr}: blockchain: executed={executed_in:.3f}s{commited_str}{v3_lag_str}")
+
+                    # update streaming field
+                    updated = self.update_streaming_field(m, field, time_in)
+
+                    # only log and track if actually updated (skip duplicates)
+                    if not updated:
+                        return
+
+                    logger.info(
+                        f"{self.dbstr}: {event_type}/{finality} for {m.msghash[:16]}... "
+                        f"in {time_in:.3f}s"
+                    )
+
+                    # add to tracking if not exists (new tx sent after connect)
+                    if m.msghash not in msg_tracking:
+                        msg_tracking[m.msghash] = {
+                            "finalized_tx": False,
+                            "finalized_action": False,
+                        }
+
+                    # track finalized state (only finalized matters for completion)
+                    if field == "finalized_tx_in":
+                        msg_tracking[m.msghash]["finalized_tx"] = True
+                    elif field == "finalized_action_in":
+                        msg_tracking[m.msghash]["finalized_action"] = True
+
+                    # mark as found when both finalized
+                    if msg_tracking[m.msghash]["finalized_tx"] and msg_tracking[m.msghash]["finalized_action"]:
+                        self.mark_streaming_found(m)
+                        logger.success(f"{self.dbstr}: Found finalized tx {m.msghash}")
+
+                    # session stats polling after DB updates/marking in background
+                    if (
+                        field == "finalized_action_in"
+                        and matched_action
+                        and self.session_stats_config.get("session_stats_enabled")
+                    ):
+                        tx_hashes = matched_action.get("transactions") or []
+                        tx_hash = tx_hashes[-1] if tx_hashes else None
+                        if not tx_hash:
+                            logger.info(f"{self.dbstr}: session_stats skip (no tx hash)")
+                        elif not self.sender_client:
+                            logger.info(f"{self.dbstr}: session_stats skip (no sender_client)")
+                        else:
+                            asyncio.create_task(
+                                self._background_session_stats(
+                                    tx_hash=tx_hash,
+                                    addr=m.addr,
+                                    utime=m.utime,
+                                )
+                            )
+
+                async def replay_cached_events() -> None:
+                    if not cached_events:
+                        return
+                    now = time.time()
+                    missing_by_hash = {m.msghash: m for m in self.get_streaming_missing_msgs()}
+                    for key in list(cached_events):
+                        events = cached_events[key]
+                        if key not in missing_by_hash:
+                            fresh_events = [(seen_at, event) for seen_at, event in events if now - seen_at <= cached_event_ttl]
+                            if fresh_events:
+                                cached_events[key] = fresh_events
+                            else:
+                                del cached_events[key]
+                            continue
+
+                        msg = missing_by_hash[key]
+                        for seen_at, event in events:
+                            if now - seen_at > cached_event_ttl:
+                                continue
+                            cached_event_type = event.get("type")
+                            cached_finality = event.get("finality")
+                            if not cached_event_type or not cached_finality:
+                                continue
+                            cached_field = self.streaming_field(cached_event_type, cached_finality)
+                            if not cached_field:
+                                continue
+                            matched, matched_action = self.match_streaming_event(
+                                event, cached_event_type, msg, log_missing_action=False
+                            )
+                            if matched:
+                                await handle_matched_event(
+                                    event,
+                                    seen_at,
+                                    msg,
+                                    cached_event_type,
+                                    cached_finality,
+                                    cached_field,
+                                    matched_action,
+                                )
+                        del cached_events[key]
+
                 async def on_event(data: dict):
+                    event_seen_at = time.time()
                     event_type = data.get("type")
                     finality = data.get("finality")
                     if not event_type or not finality:
                         return
                                         
                     # type is "transactions" or "actions", finality is "pending"/"confirmed"/"signed"/"finalized"
-                    field = None
-                    if event_type == "transactions":
-                        if finality == "pending":
-                            field = "pending_tx_in"
-                        elif finality == "confirmed":
-                            field = "confirmed_tx_in"
-                        elif finality == "signed":
-                            field = "signed_tx_in"
-                        elif finality == "finalized":
-                            field = "finalized_tx_in"
-                    elif event_type == "actions":
-                        if finality == "pending":
-                            field = "pending_action_in"
-                        elif finality == "confirmed":
-                            field = "confirmed_action_in"
-                        elif finality == "signed":
-                            field = "signed_action_in"
-                        elif finality == "finalized":
-                            field = "finalized_action_in"
+                    field = self.streaming_field(event_type, finality)
                     
                     if not field:
                         return
                     
+                    await replay_cached_events()
+
                     # match by msghash in transactions or trace_external_hash_norm in actions
+                    matched_any = False
                     for m in self.get_streaming_missing_msgs():
-                        matched = False
-                        matched_action = None
-                        
-                        if event_type == "transactions":
-                            for tx in data.get("transactions", []):
-                                tx_hash = tx.get("in_msg", {}).get("hash_norm")
-                                if tx_hash == m.msghash:
-                                    matched = True
-                                    break
-                        
-                        elif event_type == "actions":
-                            trace_hash = data.get("trace_external_hash_norm")
-                            if trace_hash == m.msghash:
-                                for action in data.get("actions", []):
-                                    action_type = action.get("type")
-                                    if action_type == self.target_action_type:
-                                        matched = True
-                                        matched_action = action
-                                        break
-                                else:
-                                    logger.warning(f"{self.dbstr}: No action type {self.target_action_type} found in actions, but trace hash matches")
+                        matched, matched_action = self.match_streaming_event(data, event_type, m)
                         
                         if matched:
-                            # capture time immediately before any async ops
-                            t_on_event = time.time()
-                            time_in = t_on_event - m.utime
+                            matched_any = True
+                            await handle_matched_event(data, event_seen_at, m, event_type, finality, field, matched_action)
 
-                            # extract blockchain times from finalized action
-                            if field == "finalized_action_in" and matched_action:
-                                end_utime = matched_action.get("end_utime")
-                                mc_seqno = matched_action.get("trace_mc_seqno_end")
-                                if end_utime:
-                                    executed_in = float(end_utime) - m.utime
-                                    commited_in = None
-                                    streaming_to_v3_lag = None
-                                    ping_ws = None
-                                    ping_v3 = None
-                                    
-                                    # get ping values
-                                    if isinstance(self.client, TonCenterStreamingClient):
-                                        ping_ws = self.client.get_last_ping_ws()
-                                    if self.sender_client:
-                                        ping_v3 = self.sender_client.get_last_ping_v3()
-                                    
-                                    if mc_seqno:
-                                        mc_utime = await self.get_mc_block_time(mc_seqno)
-                                        if mc_utime:
-                                            streaming_to_v3_lag = time.time() - t_on_event
-                                            commited_in = mc_utime - m.utime
-                                        # update ping_v3 after get_mc_block_time (it measures ping)
-                                        if self.sender_client:
-                                            ping_v3 = self.sender_client.get_last_ping_v3()
-                                    target_db = self.db_second if self.db_second else self.db
-                                    target_db.update_blockchain_times(m.addr, m.utime, executed_in, commited_in, streaming_to_v3_lag, ping_ws, ping_v3)
-                                    commited_str = f", commited={commited_in:.3f}s" if commited_in else ""
-                                    v3_lag_str = f", v3_lag={streaming_to_v3_lag:.3f}s" if streaming_to_v3_lag is not None else ", v3_lag=n/a"
-                                    logger.info(f"{self.dbstr}: blockchain: executed={executed_in:.3f}s{commited_str}{v3_lag_str}")
-
-                            # update streaming field
-                            updated = self.update_streaming_field(m, field, time_in)
-
-                            # only log and track if actually updated (skip duplicates)
-                            if not updated:
-                                continue
-                            
-                            logger.info(
-                                f"{self.dbstr}: {event_type}/{finality} for {m.msghash[:16]}... "
-                                f"in {time_in:.3f}s"
-                            )
-                            
-                            # add to tracking if not exists (new tx sent after connect)
-                            if m.msghash not in msg_tracking:
-                                msg_tracking[m.msghash] = {
-                                    "finalized_tx": False,
-                                    "finalized_action": False,
-                                }
-                            
-                            # track finalized state (only finalized matters for completion)
-                            if field == "finalized_tx_in":
-                                msg_tracking[m.msghash]["finalized_tx"] = True
-                            elif field == "finalized_action_in":
-                                msg_tracking[m.msghash]["finalized_action"] = True
-                            
-                            # mark as found when both finalized
-                            if msg_tracking[m.msghash]["finalized_tx"] and msg_tracking[m.msghash]["finalized_action"]:
-                                self.mark_streaming_found(m)
-                                logger.success(f"{self.dbstr}: Found finalized tx {m.msghash}")
-                                
-                            # session stats polling after DB updates/marking in background
-                            if (
-                                field == "finalized_action_in"
-                                and matched_action
-                                and self.session_stats_config.get("session_stats_enabled")
-                            ):
-                                tx_hashes = matched_action.get("transactions") or []
-                                tx_hash = tx_hashes[-1] if tx_hashes else None
-                                if not tx_hash:
-                                    logger.info(f"{self.dbstr}: session_stats skip (no tx hash)")
-                                elif not self.sender_client:
-                                    logger.info(f"{self.dbstr}: session_stats skip (no sender_client)")
-                                else:
-                                    asyncio.create_task(
-                                        self._background_session_stats(
-                                            tx_hash=tx_hash,
-                                            addr=m.addr,
-                                            utime=m.utime,
-                                        )
-                                    )
+                    if not matched_any:
+                        for key in self.streaming_event_keys(data, event_type):
+                            cached_events.setdefault(key, []).append((event_seen_at, data))
+                            cached_events[key] = cached_events[key][-16:]
                 
                 # listen for events
                 await self.client.listen(on_event)
@@ -691,6 +772,8 @@ class TransactionsMonitor:
             except Exception as e:
                 logger.warning(f"{self.dbstr}: streaming error: {e}, reconnecting...")
             finally:
+                if self._streaming_ready:
+                    self._streaming_ready.clear()
                 await self.client.close()
             
             await asyncio.sleep(reconnect_delay)
@@ -885,6 +968,8 @@ class TransactionsMonitor:
         while self.sent_count < (self.to_send or 100000000):  # 400 years by default
             for wdata in self.wallets:
                 try:
+                    if isinstance(self.client, TonCenterStreamingClient) and self._streaming_ready:
+                        await self._streaming_ready.wait()
                     await self.prepare_and_send_to_wallet(wdata)  # type: ignore[misc]
                 except Exception as e:
                     logger.warning(
@@ -1076,6 +1161,7 @@ class TransactionsMonitor:
         
         # choose watch method based on client type
         if isinstance(self.client, TonCenterStreamingClient):
+            self._streaming_ready = asyncio.Event()
             asyncio.create_task(self.watch_transactions_streaming())
         else:
             asyncio.create_task(self.watch_transactions())
