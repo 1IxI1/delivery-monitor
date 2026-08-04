@@ -203,6 +203,49 @@ class TransactionsMonitor:
                 logger.warning(f"{self.dbstr}: failed to get mc block {seqno}: {e}")
         logger.error(f"{self.dbstr}: mc block {seqno} not found after 1000 attempts")
         return None
+
+    async def _update_finalized_action_blockchain_times(
+        self,
+        msg: MsgInfo,
+        action: dict,
+        event_seen_at: float,
+    ) -> None:
+        """fetch auxiliary blockchain times without blocking websocket processing"""
+        try:
+            end_utime = action.get("end_utime")
+            if not end_utime:
+                return
+
+            executed_in = float(end_utime) - msg.utime
+            commited_in = None
+            streaming_to_v3_lag = None
+            ping_ws = self.client.get_last_ping_ws() if isinstance(self.client, TonCenterStreamingClient) else None
+            ping_v3 = self.sender_client.get_last_ping_v3() if self.sender_client else None
+
+            mc_seqno = action.get("trace_mc_seqno_end")
+            if mc_seqno:
+                mc_utime = await self.get_mc_block_time(mc_seqno)
+                if mc_utime:
+                    streaming_to_v3_lag = time.time() - event_seen_at
+                    commited_in = mc_utime - msg.utime
+                if self.sender_client:
+                    ping_v3 = self.sender_client.get_last_ping_v3()
+
+            target_db = self.db_second if self.db_second else self.db
+            target_db.update_blockchain_times(
+                msg.addr,
+                msg.utime,
+                executed_in,
+                commited_in,
+                streaming_to_v3_lag,
+                ping_ws,
+                ping_v3,
+            )
+            commited_str = f", commited={commited_in:.3f}s" if commited_in else ""
+            v3_lag_str = f", v3_lag={streaming_to_v3_lag:.3f}s" if streaming_to_v3_lag is not None else ", v3_lag=n/a"
+            logger.info(f"{self.dbstr}: blockchain: executed={executed_in:.3f}s{commited_str}{v3_lag_str}")
+        except Exception as e:
+            logger.warning(f"{self.dbstr}: failed to update blockchain times for {msg.msghash}: {e}")
     
     async def query_session_stats(self, workchain: int, shard: str, seqno: int, block_root_hash: str) -> Optional[dict]:
         """query session_stats ClickHouse with polling"""
@@ -614,39 +657,13 @@ class TransactionsMonitor:
                 ) -> None:
                     time_in = event_seen_at - m.utime
 
-                    # extract blockchain times from finalized action
-                    if field == "finalized_action_in" and matched_action:
-                        end_utime = matched_action.get("end_utime")
-                        mc_seqno = matched_action.get("trace_mc_seqno_end")
-                        if end_utime:
-                            executed_in = float(end_utime) - m.utime
-                            commited_in = None
-                            streaming_to_v3_lag = None
-                            ping_ws = None
-                            ping_v3 = None
-
-                            # get ping values
-                            if isinstance(self.client, TonCenterStreamingClient):
-                                ping_ws = self.client.get_last_ping_ws()
-                            if self.sender_client:
-                                ping_v3 = self.sender_client.get_last_ping_v3()
-
-                            if mc_seqno:
-                                mc_utime = await self.get_mc_block_time(mc_seqno)
-                                if mc_utime:
-                                    streaming_to_v3_lag = time.time() - event_seen_at
-                                    commited_in = mc_utime - m.utime
-                                # update ping_v3 after get_mc_block_time (it measures ping)
-                                if self.sender_client:
-                                    ping_v3 = self.sender_client.get_last_ping_v3()
-                            target_db = self.db_second if self.db_second else self.db
-                            target_db.update_blockchain_times(m.addr, m.utime, executed_in, commited_in, streaming_to_v3_lag, ping_ws, ping_v3)
-                            commited_str = f", commited={commited_in:.3f}s" if commited_in else ""
-                            v3_lag_str = f", v3_lag={streaming_to_v3_lag:.3f}s" if streaming_to_v3_lag is not None else ", v3_lag=n/a"
-                            logger.info(f"{self.dbstr}: blockchain: executed={executed_in:.3f}s{commited_str}{v3_lag_str}")
-
                     # update streaming field
                     updated = self.update_streaming_field(m, field, time_in)
+
+                    if field == "finalized_action_in" and matched_action:
+                        asyncio.create_task(
+                            self._update_finalized_action_blockchain_times(m, matched_action, event_seen_at)
+                        )
 
                     # only log and track if actually updated (skip duplicates)
                     if not updated:
