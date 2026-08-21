@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-`start.py` is the main entry point: it reads `monitors.json` and starts one `TransactionsMonitor` per enabled provider. Core logic lives in `monitor.py`; provider adapters in `client.py`; storage backends in `db_backend.py`; `api.py` serves read-only stats; `migrate_db.py` upgrades schemas. Tracked network configs live in `configs/`, system service files in `systemd/`, and TON helpers in `ts/`. Use `dev/` for one-off local scripts, but note that `dev/` is ignored by Git. Runtime artifacts such as `monitors.json`, `db/`, `*.log`, `seed.hex`, and wallet files are local-only.
+`start.py` is the main entry point: it reads `monitors.json` and starts one `TransactionsMonitor` per enabled provider. Core logic lives in `monitor.py`; provider adapters in `client.py`; storage backends in `db_backend.py`; `api.py` serves read-only stats; `migrate_db.py` upgrades schemas; `build_extra_msg.py` builds the `extra_msg_boc` jetton transfers that `jetton_transfer` monitors send. Tracked network configs live in `configs/`, system service files in `systemd/`, and TON helpers in `ts/`. Use `dev/` for one-off local scripts, but note that `dev/` is ignored by Git. Runtime artifacts such as `monitors.json`, `db/`, `*.log`, `seed.hex`, and wallet files are local-only.
 
 ## Build, Test, and Development Commands
 `python3 -m venv .venv && source .venv/bin/activate` creates a local environment. `pip install -r requirements.txt` installs dependencies. Prefer `.venv/bin/python` for direct runs because `python` may be absent from `PATH`. `cp monitors.json.example monitors.json` creates the local monitor config; fill in API keys and wallet paths before running anything.
