@@ -8,14 +8,18 @@ By default the message is a self-transfer of 1 unit: jetton balance stays the
 same and excesses come back to the sender, so the only cost is network fees.
 
 Examples:
-    # mainnet PUB5 (Public Prepaid Jetton), as used by toncenter-streaming-mainnet
+    # mainnet PUB5 (Public Prepaid Jetton), as used by toncenter-streaming-mainnet:
+    # w/prod-3.txt sends to w/prod-1.txt, which keeps every hop of the trace
+    # cross-shard once the basechain splits
     python3 build_extra_msg.py \
         --owner EQAIbKPNrlKWAvnJwTgmSB153yRzhRsKm06jNKv2H0tK6iQ1 \
-        --minter EQCgKV2KK3U6AcRpGj64KzGjz8h6aCIkaV9Mce_rpubewSl_
+        --minter EQCgKV2KK3U6AcRpGj64KzGjz8h6aCIkaV9Mce_rpubewSl_ \
+        --to EQBXQiDR589hhpT2TJGbdqVdK_JawD4r9VsAnsdnPXCsy4rh \
+        --init-mode bare
 
-    # the same, but the very first message: prepaid jetton wallets are not
-    # deployed until someone sends to them, so put state_init in the message,
-    # run the monitor once, then switch back to the message above
+    # the sender's own jetton wallet is not deployed until someone sends to it,
+    # so the very first message has to carry state_init: run the monitor once
+    # with this one, then switch back to the message above
     python3 build_extra_msg.py --owner ... --minter ... --with-state-init
 
     # testnet PUB4, sending 1 token to another owner
@@ -25,7 +29,12 @@ Examples:
         --to 0QD6a-uyjiAX8gRmtPi2ztdeBEliw6GrBa6dQBeM8wlQfJ5K
 
 Send excesses to the destination (`--response <to>`) when you want the trace to
-stay one hop shorter across shards.
+stay one hop shorter across shards, and keep them on the sender (the default)
+when you want the excesses back and one more hop to measure.
+
+Prepaid jetton wallets forward their ~855 byte code to the receiver on every
+transfer so an absent receiver gets deployed. Once it exists, `--init-mode bare`
+tells the sending wallet to address it directly and skip that forwarding.
 """
 
 import argparse
@@ -43,6 +52,9 @@ TESTNET_API_URL = "https://testnet.toncenter.com/api/v3/"
 JETTON_TRANSFER_OP = 0x0F8A7EA5
 # jetton-prepaid contracts: every wallet is born with this balance
 PREPAID_BALANCE = 1000000
+# jetton-prepaid contracts: first 2 bits of custom_payload pick how the receiving
+# wallet is addressed, 0 is state_init (deploys it), 1 is a plain address
+INIT_MODE_BARE = 1
 
 
 def run_get_method(api_url: str, api_key: str, address: str, method: str, stack: list) -> list:
@@ -112,16 +124,23 @@ def build_transfer_body(
     response_destination: Address,
     forward_ton_amount: int,
     query_id: int,
+    custom_payload: Cell = None,
 ) -> Cell:
     """transfer#0f8a7ea5, TEP-74"""
-    return (
+    body = (
         begin_cell()
         .store_uint(JETTON_TRANSFER_OP, 32)
         .store_uint(query_id, 64)
         .store_coins(amount)
         .store_address(destination)
         .store_address(response_destination)
-        .store_bool(False)  # custom_payload
+    )
+    if custom_payload is None:
+        body.store_bool(False)
+    else:
+        body.store_bool(True).store_ref(custom_payload)
+    return (
+        body
         .store_coins(forward_ton_amount)
         .store_uint(0, 1)  # forward_payload, empty and in place
         .end_cell()
@@ -146,6 +165,13 @@ def main():
         "--with-state-init",
         action="store_true",
         help="attach state_init of a prepaid jetton wallet to deploy it with the first message",
+    )
+    parser.add_argument(
+        "--init-mode",
+        choices=["auto", "bare"],
+        default="auto",
+        help="prepaid jettons: 'auto' forwards the wallet code so an absent receiver gets "
+        "deployed, 'bare' skips it and needs the receiver's jetton wallet to exist",
     )
     parser.add_argument("--testnet", action="store_true", help="use testnet.toncenter.com")
     parser.add_argument("--api-key", default=os.environ.get("TONCENTER_API_KEY", ""), help="toncenter api key, or TONCENTER_API_KEY")
@@ -172,12 +198,17 @@ def main():
             )
         print("state_init matches the jetton wallet address", file=sys.stderr)
 
+    custom_payload = None
+    if args.init_mode == "bare":
+        custom_payload = begin_cell().store_uint(INIT_MODE_BARE, 2).end_cell()
+
     body = build_transfer_body(
         amount=args.amount,
         destination=destination,
         response_destination=response_destination,
         forward_ton_amount=args.forward_ton,
         query_id=args.query_id,
+        custom_payload=custom_payload,
     )
     message = Contract.create_internal_msg(
         ihr_disabled=True,
